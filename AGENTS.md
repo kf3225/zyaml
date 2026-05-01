@@ -9,7 +9,7 @@ A native Zig YAML 1.2.2 parser library with Python bindings providing a PyYAML-c
 ```bash
 # Zig
 zig build              # Build
-zig build test         # Zig tests (58/58)
+zig build test         # Zig tests (58/58, 0 leaked, 0 segfaults)
 
 # Python (requires: eval "$(mise activate bash)")
 uv pip install -e .    # Editable install with C extension
@@ -18,11 +18,7 @@ uv run ty check python/zyaml/__init__.py  # Type check
 uv run ruff check python/zyaml/           # Lint
 ```
 
-## Test Status
-
-- **Zig:** 58/58 tests pass
-- **Python:** 121/121 tests pass
-- **Known issue:** post-test segfault in cleanup (not a test failure)
+**All tests must pass cleanly.** No segfaults, no leaks, no known failures tolerated.
 
 ---
 
@@ -49,13 +45,6 @@ python/zyaml/
 └── _ext.pyi               # Adapter: Type stubs
 ```
 
-### Layer Responsibilities
-
-| Layer | Responsibility | Dependency Direction |
-|---|---|---|
-| **Core** | Pure YAML logic. No side effects. Only accepts allocator. | No external dependencies |
-| **Adapter** | Integration with external systems (C ABI, Python, file I/O) | Depends only on Core |
-
 ### Dependency Direction (Strict)
 
 ```
@@ -77,12 +66,12 @@ Zig standard library only
 
 ### Code Conventions
 
-| Rule | Guideline | Exception |
-|---|---|---|
-| Function length | ≤ 30 lines | Up to 50 lines tolerated |
-| Nesting depth | ≤ 2 levels | Guard clauses for early exit preferred |
-| Argument count | ≤ 3 | 4+ should be grouped into a struct |
-| Branch count | ≤ 5 | switch cases are definition enumerations (exempt) |
+| Rule | Guideline |
+|---|---|
+| Function length | ≤ 30 lines (hard limit: 50) |
+| Nesting depth | ≤ 2 levels |
+| Argument count | ≤ 3 (4+ → group into a struct) |
+| Branch count | ≤ 5 (switch over enum variants exempt) |
 
 ### Principles
 
@@ -94,19 +83,15 @@ Zig standard library only
 
 4. **I/O and Logic Separation:** Do not mix side effects (file reads, output writes) with pure logic (parsing, transformation) in the same function.
 
+5. **comptime First:** Use `comptime` wherever the compiler can substitute a known value: lookup tables via `blk: { ... }` + `@splat`, `inline for` over known-length arrays, `comptime` function parameters for literals. Prefer `[256]T` lookup tables over switch chains for character classification. **Do not use `std.StaticStringMap.initComptime`** — it causes post-test segfaults with `std.testing.allocator`.
+
+6. **Ownership is Explicit:** Every allocation has exactly one owner. When ownership transfers across function boundaries, the transfer must be documented via function contract (name, parameter order, errdefer placement). Error paths must not double-free or leak.
+
 ### Comment Conventions
 
 - **Write "Why":** Document the intent behind why code is written a certain way
 - **Don't write "What":** Do not comment on things readable from the code itself
 - **Exception:** Definition enumerations (enums, test case arrays, etc.), framework boilerplate
-
-### Criteria for Adding New Files
-
-Before adding, verify:
-
-1. **Will it need replacement in the future?** → If yes, consider interface/adapter separation
-2. **Does it improve testability?** → If separating side effects makes testing easier, separate them
-3. **Is it understandable to users?** → If adding a file makes things harder to understand, don't add it
 
 ---
 
@@ -115,19 +100,18 @@ Before adding, verify:
 ### Memory Management
 
 - Core functions receive `allocator` as a parameter (no global state)
-- C API (`c_api.zig`) uses `c_allocator` (no GPA in C API)
+- C API (`c_api.zig`) uses `c_allocator` + `ArenaAllocator` per parse call
 - Always use `errdefer` for memory cleanup on error paths
 - Use `deinitMappingEntries()` helper for `Value.Mapping` errdefer cleanup
+- When `tryScalarAsMappingKey` detects `:` it commits to mapping interpretation — structural errors (InvalidIndentation, TabIndentation, DuplicateKey) propagate rather than silently falling back to scalar
 
 ### Parser Patterns
 
 - `parseValueWithContext()` → Top-level dispatcher. Routes to per-type parse functions
-- `tryScalarAsMappingKey()` → Promotes scalar value to mapping when followed by `:`
-- `resolveScalarType()` → Delegates to `Value.resolveScalar()` (DRY)
+- `tryScalarAsMappingKey()` → Returns `YamlError!?Value`. Propagates structural errors; returns null only for non-colon cases
 - `keyToString()` → Shared Value → string key conversion
-- `isNewlineContinuable()` → Plain scalar newline continuation check
-- `readAnchorName()` → Shared anchor name reading (DRY)
-- `readHexEscape()` / `appendCodepoint()` → Shared hex escape parsing (DRY)
+- `isPlainKey()` → Free function using comptime `[256]bool` lookup table
+- `parseEscapeTo()` → Uses comptime `[256]?u8` and `[256]?[]const u8` lookup tables
 - `skipNewlines()` / `hasInlineValue()` / `skipFlowWhitespaceAndComments()` → Shared scanner helpers (DRY)
 
 ### Emitter Patterns
@@ -135,13 +119,17 @@ Before adding, verify:
 - `emitMapEntry()` / `emitMapEntryValue()` → Mapping key-value output
 - `emitSeqChild()` → Recursive sequence element output (nesting control)
 - `writeNewlineIndent()` → Shared newline + indent output (DRY)
-- `needsQuoting()` → Uses `Value.isReservedWord()` / `Value.looksLikeNumber()` (DRY)
+- `collectKeys()` → Unified sorted/unsorted key collection (DRY)
+- `needsQuoting()` → Uses comptime `[256]bool` lookup tables + `Value.isReservedWord()` / `Value.looksLikeNumber()`
 
 ### C API (`c_api.zig`) Patterns
 
 - `fromValue()` / `toValue()` → Opaque pointer ↔ Value conversion
+- `parseWithArena()` → Shared arena-based parse logic for `zyaml_parse`/`zyaml_parse_file` (DRY)
+- `freeNullTerminated()` → Shared null-terminated string cleanup (DRY)
 - `buildEmitOptions()` / `nullTerminatedOutput()` → Shared export function logic
-- `writeJsonString()` → Single implementation of JSON string escape output
+- `zyaml_type` → Uses `inline else` for maintainability
+- `writeJsonEscapedChar()` → Uses comptime `[256]?[]const u8` lookup table
 
 ---
 
@@ -149,9 +137,9 @@ Before adding, verify:
 
 ### Zig Core
 
-- `src/ast/value.zig` — Value union type, `resolveScalar()`, `isReservedWord()`, `looksLikeNumber()`, `matchesVariants()`, `tryParsePrefixedInt()`
+- `src/ast/value.zig` — Value union type, `resolveScalar()`, `isReservedWord()`, `looksLikeNumber()`, `matchesVariants()` (comptime params)
 - `src/parser/parser.zig` — Main parser
-- `src/parser/scanner.zig` — Character scanner
+- `src/parser/scanner.zig` — Character scanner (`startWith` with comptime prefix)
 - `src/encode/emitter.zig` — YAML stringification
 - `src/error.zig` — Error type definitions
 
@@ -178,14 +166,13 @@ Before adding, verify:
 
 ## Performance
 
-zyaml vs PyYAML:
-- **load:** ~70x faster
-- **dump:** ~47x faster
+zyaml vs PyYAML vs ruamel.yaml:
+- **parse:** 66-196x faster than PyYAML (120-290x vs ruamel)
+- **stringify:** ~300x faster than PyYAML
 
 ## Instructions
 
 - Communicate with the user in Japanese
-- `zig build test` post-test segfault is a known issue (tests themselves all pass)
 - `uv pip install -e .` enables editable install with C extension
 - `eval "$(mise activate bash)"` may be required
 - pre-commit hooks are configured (ruff, ruff-format, ty check)
