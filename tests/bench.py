@@ -1,9 +1,10 @@
-"""Benchmark zyaml vs PyYAML across file sizes and iteration counts."""
+"""Benchmark zyaml vs PyYAML vs ruamel.yaml across file sizes and iteration counts."""
 
 import os
 import time
 
 import yaml as pyyaml
+from ruamel.yaml import YAML as RuamelYAML
 
 import zyaml
 
@@ -80,6 +81,14 @@ def bench_pyyaml(content: str, iters: int) -> float:
     return time.perf_counter() - start
 
 
+def bench_ruamel(content: str, iters: int) -> float:
+    ry = RuamelYAML(typ="safe")
+    start = time.perf_counter()
+    for _ in range(iters):
+        ry.load(content)
+    return time.perf_counter() - start
+
+
 def bench_zyaml_parse(content: str, iters: int) -> float:
     encoded = content.encode("utf-8")
     lib = zyaml._lib
@@ -117,9 +126,9 @@ def format_bytes(n: int) -> str:
 
 def main():
     print(
-        f"{'Size':<10} {'Bytes':>10} {'Iters':>8} {'PyYAML':>12} {'zyaml(parse)':>12} {'zyaml(loads)':>12} {'zyaml(stringify)':>16} {'Speedup':>8}"
+        f"{'Size':<10} {'Bytes':>10} {'Iters':>8} {'PyYAML':>12} {'ruamel':>12} {'zyaml(parse)':>12} {'zyaml(loads)':>12} {'zyaml(stringify)':>16} {'Speedup':>8}"
     )
-    print("-" * 90)
+    print("-" * 104)
 
     for name, gen_fn in SIZES.items():
         content = gen_fn()
@@ -127,6 +136,7 @@ def main():
         iters = ITERS[name]
 
         t_pyyaml = bench_pyyaml(content, iters)
+        t_ruamel = bench_ruamel(content, iters)
         t_parse = bench_zyaml_parse(content, iters)
         t_loads = bench_zyaml_loads(content, iters)
         t_stringify = bench_zyaml_roundtrip(content, iters)
@@ -135,7 +145,7 @@ def main():
 
         print(
             f"{name:<10} {format_bytes(nbytes):>10} {iters:>8} "
-            f"{t_pyyaml:>10.3f}s {t_parse:>10.3f}s {t_loads:>10.3f}s "
+            f"{t_pyyaml:>10.3f}s {t_ruamel:>10.3f}s {t_parse:>10.3f}s {t_loads:>10.3f}s "
             f"{t_stringify:>14.3f}s {speedup:>7.1f}x"
         )
 
