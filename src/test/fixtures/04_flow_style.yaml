@@ -1,0 +1,17 @@
+# Flow style sequence
+colors: [red, green, blue]
+numbers: [1, 2, 3, 4, 5]
+nested: [[1, 2], [3, 4]]
+empty_flow_seq: []
+
+# Flow style mapping
+point: {x: 10, y: 20}
+config: {host: localhost, port: 8080}
+nested_flow: {outer: {inner: value}}
+empty_flow_map: {}
+
+# Mixed flow and block
+servers:
+  - {name: web1, ip: 10.0.0.1}
+  - {name: web2, ip: 10.0.0.2}
+  - {name: web3, ip: 10.0.0.3}

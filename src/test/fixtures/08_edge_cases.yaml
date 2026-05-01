@@ -1,0 +1,26 @@
+# Multiline plain scalar
+description: This is a very long
+  plain scalar that spans
+  multiple lines.
+
+# Colon in value
+path: /usr/local/bin:/usr/bin
+url: https://example.com:8080
+
+# Empty values
+empty_value:
+also_empty:
+
+# Comments everywhere
+key1: value1 # inline comment
+# standalone comment
+
+# Special characters in strings
+special: "tab:\t newline:\n quote:\" backslash:\\"
+
+# Escaped unicode
+unicode: "\u0041\u0042\u0043"
+
+# Complex key with question mark
+? complex key
+: complex value

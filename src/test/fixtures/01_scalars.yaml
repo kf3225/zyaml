@@ -1,0 +1,17 @@
+# Basic scalar types
+string_value: hello world
+quoted_string: "hello world"
+single_quoted: 'hello world'
+integer_value: 42
+negative_integer: -7
+float_value: 3.14
+boolean_true: true
+boolean_false: false
+null_value: null
+tilde_null: ~
+hex_integer: 0xFF
+octal_integer: 0o77
+binary_integer: 0b1010
+infinity: .inf
+negative_infinity: -.inf
+not_a_number: .nan

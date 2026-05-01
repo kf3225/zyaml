@@ -1,0 +1,44 @@
+# Realistic config file
+application:
+  name: MyApp
+  version: "2.1.0"
+  environment: production
+
+database:
+  host: db.example.com
+  port: 5432
+  name: myapp_production
+  pool_size: 20
+  timeout: 30.0
+
+logging:
+  level: info
+  outputs:
+    - type: file
+      path: /var/log/myapp.log
+      max_size: 100MB
+      rotation: 5
+    - type: console
+      color: true
+
+features:
+  authentication: true
+  caching: true
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+
+servers:
+  - name: web-01
+    host: 10.0.1.1
+    role: frontend
+    tags: [web, frontend, production]
+  - name: api-01
+    host: 10.0.2.1
+    role: backend
+    tags: [api, backend, production]
+  - name: worker-01
+    host: 10.0.3.1
+    role: worker
+    tags: [worker, background, production]

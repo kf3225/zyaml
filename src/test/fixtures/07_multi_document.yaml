@@ -1,0 +1,13 @@
+%YAML 1.2
+---
+# First document
+name: Document One
+version: 1.0
+---
+# Second document
+name: Document Two
+version: 2.0
+---
+# Third document
+name: Document Three
+version: 3.0

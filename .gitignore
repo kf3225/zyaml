@@ -1,0 +1,22 @@
+# Zig
+.zig-cache/
+zig-out/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.so
+dist/
+build/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv
+.python-version
+
+# OS
+.DS_Store

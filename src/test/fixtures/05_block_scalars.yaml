@@ -1,0 +1,39 @@
+# Literal block scalar (preserves newlines)
+description: |
+  This is a literal block scalar.
+  Newlines are preserved.
+
+  Blank lines too.
+
+# Literal with strip
+strip: |-
+  Line one
+  Line two
+
+
+
+# Literal with keep
+keep: |+
+  Line one
+  Line two
+
+
+
+# Folded block scalar (folds newlines to spaces)
+summary: >
+  This is a folded block scalar.
+  Newlines become spaces.
+
+  Blank lines are preserved as newlines.
+
+# Folded with strip
+folded_strip: >-
+  Paragraph one
+  continues here.
+
+  Paragraph two.
+
+# Block with indentation indicator
+indented: |2
+    Indented by 2 extra
+    spaces from indicator

@@ -1,0 +1,12 @@
+# Anchor and alias
+default: &DEFAULTS
+  timeout: 30
+  retries: 3
+  verbose: false
+
+production:
+  timeout: 60
+  retries: 5
+
+development:
+  verbose: true
