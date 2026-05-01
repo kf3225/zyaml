@@ -12,15 +12,8 @@ pub const Value = union(enum) {
     pub const Sequence = std.ArrayList(Value);
     pub const Mapping = std.StringArrayHashMap(Value);
 
-    fn matchesVariants(s: []const u8, v1: []const u8, v2: []const u8, v3: []const u8) bool {
+    fn matchesVariants(s: []const u8, comptime v1: []const u8, comptime v2: []const u8, comptime v3: []const u8) bool {
         return std.mem.eql(u8, s, v1) or std.mem.eql(u8, s, v2) or std.mem.eql(u8, s, v3);
-    }
-
-    fn tryParsePrefixedInt(str: []const u8, p1: []const u8, p2: []const u8, base: u8) ?i64 {
-        if (std.mem.startsWith(u8, str, p1) or std.mem.startsWith(u8, str, p2)) {
-            return std.fmt.parseInt(i64, str[2..], base) catch null;
-        }
-        return null;
     }
 
     pub fn isReservedWord(s: []const u8) bool {

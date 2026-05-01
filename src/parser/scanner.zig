@@ -52,9 +52,12 @@ pub const Scanner = struct {
         return self.pos >= self.source.len;
     }
 
-    pub fn startWith(self: *Scanner, prefix: []const u8) bool {
-        if (prefix.len > self.source.len or self.pos > self.source.len - prefix.len) return false;
-        return std.mem.eql(u8, self.source[self.pos .. self.pos + prefix.len], prefix);
+    pub fn startWith(self: *Scanner, comptime prefix: []const u8) bool {
+        if (self.pos + prefix.len > self.source.len) return false;
+        inline for (prefix, 0..) |ch, i| {
+            if (self.source[self.pos + i] != ch) return false;
+        }
+        return true;
     }
 
     pub fn skipBytes(self: *Scanner, count: usize) void {

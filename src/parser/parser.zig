@@ -6,7 +6,7 @@ const YamlError = @import("../error.zig").YamlError;
 const DEBUG = false;
 
 fn debugPrint(comptime fmt: []const u8, args: anytype) void {
-    if (DEBUG) {
+    if (comptime DEBUG) {
         std.debug.print(fmt, args);
     }
 }
@@ -149,13 +149,19 @@ pub const Parser = struct {
         return self.parseValueWithContext(indent, false);
     }
 
-    fn tryScalarAsMappingKey(self: *Parser, scalar: Value, indent: usize, in_mapping_value: bool) ?Value {
+    fn tryScalarAsMappingKey(self: *Parser, scalar: Value, indent: usize, in_mapping_value: bool) YamlError!?Value {
         if (in_mapping_value) return null;
         self.scanner.skipWhitespace();
         if (self.scanner.peek() != ':') return null;
         const next = self.scanner.peekAt(1);
         if (next != ' ' and next != '\n' and next != null) return null;
-        return self.parseBlockMappingWithKey(scalar, indent) catch null;
+        return self.parseBlockMappingWithKey(scalar, indent) catch |err| switch (err) {
+            error.InvalidIndentation,
+            error.TabIndentation,
+            error.DuplicateKey,
+            => err,
+            else => null,
+        };
     }
 
     fn parseValueWithContext(self: *Parser, indent: usize, in_mapping_value: bool) YamlError!Value {
@@ -168,12 +174,12 @@ pub const Parser = struct {
             '{' => return self.parseFlowMapping(),
             '"' => {
                 const str = try self.parseDoubleQuotedScalar();
-                if (self.tryScalarAsMappingKey(str, indent, in_mapping_value)) |map| return map;
+                if (try self.tryScalarAsMappingKey(str, indent, in_mapping_value)) |map| return map;
                 return str;
             },
             '\'' => {
                 const str = try self.parseSingleQuotedScalar();
-                if (self.tryScalarAsMappingKey(str, indent, in_mapping_value)) |map| return map;
+                if (try self.tryScalarAsMappingKey(str, indent, in_mapping_value)) |map| return map;
                 return str;
             },
             '|', '>' => return self.parseBlockScalar(),
@@ -194,21 +200,26 @@ pub const Parser = struct {
             else => {},
         }
 
-        if (self.isPlainKey(ch)) {
+        if (isPlainKey(ch)) {
             const scalar = try self.parsePlainScalar(indent, in_mapping_value);
-            if (self.tryScalarAsMappingKey(scalar, indent, in_mapping_value)) |map| return map;
+            if (try self.tryScalarAsMappingKey(scalar, indent, in_mapping_value)) |map| return map;
             return scalar;
         }
 
         return .null;
     }
 
-    fn isPlainKey(self: *Parser, ch: u8) bool {
-        _ = self;
-        return switch (ch) {
-            'a'...'z', 'A'...'Z', '0'...'9', '_', '-', '.', '/', ':', '?', '|', '>', '*', '&', '!', '=', '<', '%', '@', '`', ' ', '\t' => true,
-            else => ch > 0x7F,
-        };
+    const plain_key_chars = blk: {
+        var table: [256]bool = @splat(false);
+        for ('a'..'z' + 1) |ch| table[ch] = true;
+        for ('A'..'Z' + 1) |ch| table[ch] = true;
+        for ('0'..'9' + 1) |ch| table[ch] = true;
+        for ("_-.?:|>&!=<%@` \t") |ch| table[ch] = true;
+        break :blk table;
+    };
+
+    fn isPlainKey(ch: u8) bool {
+        return plain_key_chars[ch] or ch > 0x7F;
     }
 
     fn keyToString(self: *Parser, key_val: Value) YamlError![]const u8 {
@@ -304,7 +315,7 @@ pub const Parser = struct {
     fn resolvePlainScalarSlice(self: *Parser, start_pos: usize) YamlError!Value {
         const raw = self.scanner.source[start_pos..self.scanner.pos];
         const trimmed = std.mem.trim(u8, raw, " \t");
-        const resolved = self.resolveScalarType(trimmed);
+        const resolved = Value.resolveScalar(trimmed);
         if (resolved == .string) {
             return .{ .string = try self.allocator.dupe(u8, trimmed) };
         }
@@ -355,20 +366,15 @@ pub const Parser = struct {
         const raw = try result.toOwnedSlice();
         const trimmed = std.mem.trim(u8, raw, " \t");
         if (trimmed.len == raw.len) {
-            const resolved = self.resolveScalarType(raw);
+            const resolved = Value.resolveScalar(raw);
             if (resolved != .string) self.allocator.free(raw);
             return resolved;
         }
         const str = try self.allocator.dupe(u8, trimmed);
         self.allocator.free(raw);
-        const resolved = self.resolveScalarType(str);
+        const resolved = Value.resolveScalar(str);
         if (resolved != .string) self.allocator.free(str);
         return resolved;
-    }
-
-    fn resolveScalarType(self: *Parser, str: []const u8) Value {
-        _ = self;
-        return Value.resolveScalar(str);
     }
 
     fn parseDoubleQuotedScalar(self: *Parser) YamlError!Value {
@@ -423,28 +429,46 @@ pub const Parser = struct {
         try result.appendSlice(out[0..len]);
     }
 
+    const escape_single = blk: {
+        var table: [256]?u8 = @splat(null);
+        table['0'] = 0x00;
+        table['a'] = 0x07;
+        table['b'] = 0x08;
+        table['t'] = '\t';
+        table['n'] = '\n';
+        table['v'] = 0x0B;
+        table['f'] = 0x0C;
+        table['r'] = '\r';
+        table['e'] = 0x1B;
+        table[' '] = ' ';
+        table['"'] = '"';
+        table['/'] = '/';
+        table['\\'] = '\\';
+        break :blk table;
+    };
+
+    const escape_multi = blk: {
+        var table: [256]?[]const u8 = @splat(null);
+        table['N'] = "\u{0085}";
+        table['_'] = "\u{00A0}";
+        table['L'] = "\u{2028}";
+        table['P'] = "\u{2029}";
+        break :blk table;
+    };
+
     fn parseEscapeTo(self: *Parser, result: *std.ArrayList(u8)) YamlError!void {
         const ch = self.scanner.peek() orelse return YamlError.InvalidEscapeSequence;
         self.scanner.skip();
 
+        if (escape_single[ch]) |byte| {
+            try result.append(byte);
+            return;
+        }
+        if (escape_multi[ch]) |slice| {
+            try result.appendSlice(slice);
+            return;
+        }
         switch (ch) {
-            '0' => try result.append(0x00),
-            'a' => try result.append(0x07),
-            'b' => try result.append(0x08),
-            't' => try result.append('\t'),
-            'n' => try result.append('\n'),
-            'v' => try result.append(0x0B),
-            'f' => try result.append(0x0C),
-            'r' => try result.append('\r'),
-            'e' => try result.append(0x1B),
-            ' ' => try result.append(' '),
-            '"' => try result.append('"'),
-            '/' => try result.append('/'),
-            '\\' => try result.append('\\'),
-            'N' => try result.appendSlice("\u{0085}"),
-            '_' => try result.appendSlice("\u{00A0}"),
-            'L' => try result.appendSlice("\u{2028}"),
-            'P' => try result.appendSlice("\u{2029}"),
             'x' => {
                 const code = try self.readHexEscape(u8, 2);
                 try result.append(code);
@@ -801,7 +825,7 @@ pub const Parser = struct {
         }
 
         const raw = self.scanner.source[start_pos..self.scanner.pos];
-        const resolved = self.resolveScalarType(raw);
+        const resolved = Value.resolveScalar(raw);
         if (resolved == .string) {
             return .{ .string = try self.allocator.dupe(u8, raw) };
         }
@@ -953,7 +977,7 @@ pub const Parser = struct {
             const leading_spaces = self.scanner.countLeadingSpaces();
             self.scanner.skipBytes(leading_spaces);
 
-            if (!self.isPlainKey(self.scanner.peek() orelse 0)) break;
+            if (!isPlainKey(self.scanner.peek() orelse 0)) break;
 
             const next_key_str = try self.keyToString(try self.parsePlainScalar(indent, false));
 

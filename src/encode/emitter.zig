@@ -69,18 +69,28 @@ pub const Emitter = struct {
         try self.emitSingleQuoted(s);
     }
 
+    const needs_quote_first = blk: {
+        var table: [256]bool = @splat(false);
+        for ("-?:,[]{}#&*!%@`\"'|>") |ch| table[ch] = true;
+        break :blk table;
+    };
+
+    const needs_quote_any = blk: {
+        var table: [256]bool = @splat(false);
+        table[':'] = true;
+        table['#'] = true;
+        table['\n'] = true;
+        break :blk table;
+    };
+
     fn needsQuoting(s: []const u8) bool {
         if (s.len == 0) return true;
         if (s[0] == ' ' or s[s.len - 1] == ' ') return true;
         if (Value.isReservedWord(s)) return true;
         if (Value.looksLikeNumber(s)) return true;
-        const first = s[0];
-        switch (first) {
-            '-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '%', '@', '`', '"', '\'', '|', '>' => return true,
-            else => {},
-        }
+        if (needs_quote_first[s[0]]) return true;
         for (s) |ch| {
-            if (ch == ':' or ch == '#' or ch == '\n') return true;
+            if (needs_quote_any[ch]) return true;
         }
         return false;
     }

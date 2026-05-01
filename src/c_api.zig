@@ -129,13 +129,7 @@ export fn zyaml_free(value: ?*YamlValueOpaque) void {
 export fn zyaml_type(value: ?*YamlValueOpaque) YamlType {
     if (toValue(value)) |v| {
         return switch (v.*) {
-            .null => .null,
-            .boolean => .boolean,
-            .integer => .integer,
-            .float => .float,
-            .string => .string,
-            .sequence => .sequence,
-            .mapping => .mapping,
+            inline else => |_, tag| @field(YamlType, @tagName(tag)),
         };
     }
     return .null;
@@ -323,23 +317,28 @@ export fn zyaml_to_json(value: ?*YamlValueOpaque, out_len: *usize) ?[*:0]const u
     return null;
 }
 
+const json_escape_map = blk: {
+    var table: [256]?[]const u8 = @splat(null);
+    table['"'] = "\\\"";
+    table['\\'] = "\\\\";
+    table['\n'] = "\\n";
+    table['\r'] = "\\r";
+    table['\t'] = "\\t";
+    break :blk table;
+};
+
 fn writeJsonEscapedChar(buf: *std.ArrayList(u8), ch: u8) JsonWriteError!void {
-    switch (ch) {
-        '"' => try buf.appendSlice("\\\""),
-        '\\' => try buf.appendSlice("\\\\"),
-        '\n' => try buf.appendSlice("\\n"),
-        '\r' => try buf.appendSlice("\\r"),
-        '\t' => try buf.appendSlice("\\t"),
-        else => {
-            if (ch < 0x20) {
-                try buf.appendSlice("\\u00");
-                const hex = "0123456789abcdef";
-                try buf.append(hex[ch >> 4]);
-                try buf.append(hex[ch & 0xf]);
-            } else {
-                try buf.append(ch);
-            }
-        },
+    if (json_escape_map[ch]) |escaped| {
+        try buf.appendSlice(escaped);
+        return;
+    }
+    if (ch < 0x20) {
+        try buf.appendSlice("\\u00");
+        const hex = "0123456789abcdef";
+        try buf.append(hex[ch >> 4]);
+        try buf.append(hex[ch & 0xf]);
+    } else {
+        try buf.append(ch);
     }
 }
 
