@@ -6,6 +6,7 @@ pub const Scanner = struct {
     pos: usize,
     line: usize,
     column: usize,
+    line_start: usize,
 
     pub fn init(source: []const u8) Scanner {
         return .{
@@ -13,6 +14,7 @@ pub const Scanner = struct {
             .pos = 0,
             .line = 1,
             .column = 1,
+            .line_start = 0,
         };
     }
 
@@ -35,6 +37,7 @@ pub const Scanner = struct {
         if (ch == '\n') {
             self.line += 1;
             self.column = 1;
+            self.line_start = self.pos;
         } else {
             self.column += 1;
         }
@@ -55,9 +58,16 @@ pub const Scanner = struct {
     }
 
     pub fn skipBytes(self: *Scanner, count: usize) void {
-        var i: usize = 0;
-        while (i < count and !self.isEof()) : (i += 1) {
-            _ = self.advance();
+        const end = @min(self.pos + count, self.source.len);
+        for (self.source[self.pos..end]) |ch| {
+            self.pos += 1;
+            if (ch == '\n') {
+                self.line += 1;
+                self.column = 1;
+                self.line_start = self.pos;
+            } else {
+                self.column += 1;
+            }
         }
     }
 
@@ -86,11 +96,7 @@ pub const Scanner = struct {
     }
 
     fn lineStartOffset(self: Scanner) usize {
-        var pos = self.pos;
-        while (pos > 0 and self.source[pos - 1] != '\n') {
-            pos -= 1;
-        }
-        return pos;
+        return self.line_start;
     }
 
     fn countSpacesFrom(self: Scanner, start: usize) usize {

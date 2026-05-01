@@ -36,17 +36,35 @@ pub const YamlType = enum(c_int) {
 
 pub const YamlValueOpaque = opaque {};
 
-fn fromValue(v: Value) *YamlValueOpaque {
-    const box = c_alloc.create(Value) catch @panic("out of memory");
-    box.* = v;
+fn fromValue(v: Value, arena: *std.heap.ArenaAllocator) *YamlValueOpaque {
+    const box = c_alloc.create(BoxedValue) catch @panic("out of memory");
+    box.* = .{ .value = v, .arena = arena };
     return @ptrCast(@alignCast(box));
 }
 
-fn toValue(ptr: ?*YamlValueOpaque) ?*Value {
+const BoxedValue = struct {
+    value: Value,
+    arena: ?*std.heap.ArenaAllocator,
+};
+
+fn toBoxedValue(ptr: ?*YamlValueOpaque) ?*BoxedValue {
     if (ptr) |p| {
         return @ptrCast(@alignCast(p));
     }
     return null;
+}
+
+fn toValue(ptr: ?*YamlValueOpaque) ?*Value {
+    if (toBoxedValue(ptr)) |b| {
+        return &b.value;
+    }
+    return null;
+}
+
+fn boxValue(v: Value) ?*YamlValueOpaque {
+    const box = c_alloc.create(BoxedValue) catch return null;
+    box.* = .{ .value = v, .arena = null };
+    return @ptrCast(@alignCast(box));
 }
 
 fn allocDupZ(s: []const u8) ?[*:0]const u8 {
@@ -54,18 +72,30 @@ fn allocDupZ(s: []const u8) ?[*:0]const u8 {
     return duped.ptr;
 }
 
-export fn zyaml_parse(input: [*]const u8, len: usize) ?*YamlValueOpaque {
-    clearError();
-    const source = input[0..len];
-    const owned = c_alloc.dupeZ(u8, source) catch @panic("out of memory");
-    defer c_alloc.free(owned);
-    var parser = Parser.init(c_alloc, owned);
+fn parseWithArena(source: []const u8, error_context: ?[]const u8) ?*YamlValueOpaque {
+    const arena_ptr = c_alloc.create(std.heap.ArenaAllocator) catch @panic("out of memory");
+    arena_ptr.* = std.heap.ArenaAllocator.init(c_alloc);
+    const arena_alloc = arena_ptr.allocator();
+
+    var parser = Parser.init(arena_alloc, source);
     const value = parser.parse() catch |err| {
-        setError("parse error: {}", .{err});
+        parser.deinit();
+        arena_ptr.deinit();
+        c_alloc.destroy(arena_ptr);
+        if (error_context) |ctx| {
+            setError("parse error in '{s}': {}", .{ ctx, err });
+        } else {
+            setError("parse error: {}", .{err});
+        }
         return null;
     };
     parser.deinit();
-    return fromValue(value);
+    return fromValue(value, arena_ptr);
+}
+
+export fn zyaml_parse(input: [*]const u8, len: usize) ?*YamlValueOpaque {
+    clearError();
+    return parseWithArena(input[0..len], null);
 }
 
 export fn zyaml_parse_file(path: [*:0]const u8) ?*YamlValueOpaque {
@@ -81,19 +111,18 @@ export fn zyaml_parse_file(path: [*:0]const u8) ?*YamlValueOpaque {
         return null;
     };
     defer c_alloc.free(source);
-    var parser = Parser.init(c_alloc, source);
-    const value = parser.parse() catch |err| {
-        parser.deinit();
-        setError("parse error in '{s}': {}", .{ path_slice, err });
-        return null;
-    };
-    return fromValue(value);
+    return parseWithArena(source, path_slice);
 }
 
 export fn zyaml_free(value: ?*YamlValueOpaque) void {
-    if (toValue(value)) |v| {
-        v.deinit(c_alloc);
-        c_alloc.destroy(v);
+    if (toBoxedValue(value)) |b| {
+        if (b.arena) |arena| {
+            arena.deinit();
+            c_alloc.destroy(arena);
+        } else {
+            b.value.deinit(c_alloc);
+            c_alloc.destroy(b);
+        }
     }
 }
 
@@ -143,10 +172,7 @@ export fn zyaml_as_string(value: ?*YamlValueOpaque) ?[*:0]const u8 {
 }
 
 export fn zyaml_free_string(s: ?[*:0]u8) void {
-    if (s) |ptr| {
-        const slice = std.mem.sliceTo(ptr, 0);
-        c_alloc.free(slice);
-    }
+    freeNullTerminated(s);
 }
 
 export fn zyaml_sequence_len(value: ?*YamlValueOpaque) usize {
@@ -160,12 +186,8 @@ export fn zyaml_sequence_get(value: ?*YamlValueOpaque, index: usize) ?*YamlValue
     if (toValue(value)) |v| {
         if (v.* == .sequence) {
             if (index < v.sequence.items.len) {
-                const box = c_alloc.create(Value) catch return null;
-                box.* = v.sequence.items[index].deepClone(c_alloc) catch {
-                    c_alloc.destroy(box);
-                    return null;
-                };
-                return @ptrCast(@alignCast(box));
+                const cloned = v.sequence.items[index].deepClone(c_alloc) catch return null;
+                return boxValue(cloned);
             }
         }
     }
@@ -184,12 +206,8 @@ export fn zyaml_mapping_get(value: ?*YamlValueOpaque, key: [*]const u8, key_len:
         if (v.* == .mapping) {
             const key_slice = key[0..key_len];
             if (v.mapping.get(key_slice)) |found| {
-                const box = c_alloc.create(Value) catch return null;
-                box.* = found.deepClone(c_alloc) catch {
-                    c_alloc.destroy(box);
-                    return null;
-                };
-                return @ptrCast(@alignCast(box));
+                const cloned = found.deepClone(c_alloc) catch return null;
+                return boxValue(cloned);
             }
         }
     }
@@ -216,14 +234,23 @@ export fn zyaml_mapping_get_key_borrow(value: ?*YamlValueOpaque, index: usize, o
     out_len.* = 0;
     if (toValue(value)) |v| {
         if (v.* == .mapping) {
-            var iter = v.mapping.iterator();
-            var i: usize = 0;
-            while (iter.next()) |entry| {
-                if (i == index) {
-                    out_len.* = entry.key_ptr.*.len;
-                    return entry.key_ptr.*.ptr;
-                }
-                i += 1;
+            const entries = v.mapping.unmanaged.entries;
+            if (index < entries.len) {
+                const key = entries.items(.key)[index];
+                out_len.* = key.len;
+                return key.ptr;
+            }
+        }
+    }
+    return null;
+}
+
+export fn zyaml_mapping_get_value_borrow(value: ?*YamlValueOpaque, index: usize) ?*YamlValueOpaque {
+    if (toValue(value)) |v| {
+        if (v.* == .mapping) {
+            const entries = v.mapping.unmanaged.entries;
+            if (index < entries.len) {
+                return @ptrCast(@alignCast(&entries.items(.value)[index]));
             }
         }
     }
@@ -255,12 +282,17 @@ export fn zyaml_mapping_get_borrow(value: ?*YamlValueOpaque, key: [*]const u8, k
 
 export fn zyaml_stringify(value: ?*YamlValueOpaque) ?[*:0]const u8 {
     if (toValue(value)) |v| {
-        const output = zyaml.stringify(c_alloc, v.*) catch return null;
-        const terminated = c_alloc.dupeZ(u8, output) catch {
-            c_alloc.free(output);
+        var buffer = std.ArrayList(u8).init(c_alloc);
+        errdefer buffer.deinit();
+        var emitter = zyaml.Emitter.init(c_alloc, buffer.writer(), .{});
+        emitter.emitValue(v.*) catch {
+            buffer.deinit();
             return null;
         };
-        c_alloc.free(output);
+        const terminated = buffer.toOwnedSliceSentinel(0) catch {
+            buffer.deinit();
+            return null;
+        };
         return terminated.ptr;
     }
     return null;
@@ -367,10 +399,7 @@ fn writeJsonMapping(buf: *std.ArrayList(u8), map: Value.Mapping) JsonWriteError!
 }
 
 export fn zyaml_free_json(s: ?[*:0]u8) void {
-    if (s) |ptr| {
-        const slice = std.mem.sliceTo(ptr, 0);
-        c_alloc.free(slice);
-    }
+    freeNullTerminated(s);
 }
 
 fn jsonObjectToMapping(allocator: Allocator, obj: std.json.ObjectMap) Allocator.Error!Value {
@@ -466,57 +495,39 @@ export fn zyaml_as_string_borrow(value: ?*YamlValueOpaque, out_len: *usize) ?[*]
 }
 
 export fn zyaml_free_yaml(s: ?[*:0]u8) void {
-    if (s) |ptr| {
-        const slice = std.mem.sliceTo(ptr, 0);
-        c_alloc.free(slice);
-    }
+    freeNullTerminated(s);
 }
 
 export fn zyaml_value_null() ?*YamlValueOpaque {
-    const box = c_alloc.create(Value) catch return null;
-    box.* = .null;
-    return @ptrCast(@alignCast(box));
+    return boxValue(.null);
 }
 
 export fn zyaml_value_bool(b: bool) ?*YamlValueOpaque {
-    const box = c_alloc.create(Value) catch return null;
-    box.* = .{ .boolean = b };
-    return @ptrCast(@alignCast(box));
+    return boxValue(.{ .boolean = b });
 }
 
 export fn zyaml_value_int(i: i64) ?*YamlValueOpaque {
-    const box = c_alloc.create(Value) catch return null;
-    box.* = .{ .integer = i };
-    return @ptrCast(@alignCast(box));
+    return boxValue(.{ .integer = i });
 }
 
 export fn zyaml_value_float(f: f64) ?*YamlValueOpaque {
-    const box = c_alloc.create(Value) catch return null;
-    box.* = .{ .float = f };
-    return @ptrCast(@alignCast(box));
+    return boxValue(.{ .float = f });
 }
 
 export fn zyaml_value_string(s: [*]const u8, len: usize) ?*YamlValueOpaque {
-    const box = c_alloc.create(Value) catch return null;
-    const duped = c_alloc.dupeZ(u8, s[0..len]) catch {
-        c_alloc.destroy(box);
-        return null;
-    };
-    box.* = .{ .string = duped[0..len :0] };
-    return @ptrCast(@alignCast(box));
+    const duped = c_alloc.dupeZ(u8, s[0..len]) catch return null;
+    return boxValue(.{ .string = duped[0..len :0] });
 }
 
 export fn zyaml_value_sequence() ?*YamlValueOpaque {
-    const box = c_alloc.create(Value) catch return null;
-    box.* = .{ .sequence = Value.Sequence.init(c_alloc) };
-    return @ptrCast(@alignCast(box));
+    return boxValue(.{ .sequence = Value.Sequence.init(c_alloc) });
 }
 
 export fn zyaml_value_sequence_append(seq: ?*YamlValueOpaque, val: ?*YamlValueOpaque) bool {
-    if (toValue(seq)) |s| {
-        if (s.* == .sequence) {
-            if (toValue(val)) |v| {
-                s.sequence.append(v.*) catch return false;
+    if (toBoxedValue(seq)) |s| {
+        if (s.value == .sequence) {
+            if (toBoxedValue(val)) |v| {
+                s.value.sequence.append(v.value) catch return false;
                 c_alloc.destroy(v);
                 return true;
             }
@@ -526,17 +537,15 @@ export fn zyaml_value_sequence_append(seq: ?*YamlValueOpaque, val: ?*YamlValueOp
 }
 
 export fn zyaml_value_mapping() ?*YamlValueOpaque {
-    const box = c_alloc.create(Value) catch return null;
-    box.* = .{ .mapping = Value.Mapping.init(c_alloc) };
-    return @ptrCast(@alignCast(box));
+    return boxValue(.{ .mapping = Value.Mapping.init(c_alloc) });
 }
 
 export fn zyaml_value_mapping_put(map: ?*YamlValueOpaque, key: [*]const u8, key_len: usize, val: ?*YamlValueOpaque) bool {
-    if (toValue(map)) |m| {
-        if (m.* == .mapping) {
-            if (toValue(val)) |v| {
+    if (toBoxedValue(map)) |m| {
+        if (m.value == .mapping) {
+            if (toBoxedValue(val)) |v| {
                 const duped_key = c_alloc.dupeZ(u8, key[0..key_len]) catch return false;
-                m.mapping.put(duped_key[0..key_len :0], v.*) catch {
+                m.value.mapping.put(duped_key[0..key_len :0], v.value) catch {
                     c_alloc.free(duped_key);
                     return false;
                 };
@@ -598,10 +607,7 @@ export fn zyaml_stringify_options(
 }
 
 export fn zyaml_free_cstr(s: ?[*:0]u8) void {
-    if (s) |ptr| {
-        const slice = std.mem.sliceTo(ptr, 0);
-        c_alloc.free(slice);
-    }
+    freeNullTerminated(s);
 }
 
 export fn zyaml_error_message() ?[*:0]const u8 {

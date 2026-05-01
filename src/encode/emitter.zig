@@ -97,7 +97,7 @@ pub const Emitter = struct {
         try self.writer.writeByte('\'');
     }
 
-    fn sortedKeys(self: *Emitter, map: Value.Mapping) ![]const []const u8 {
+    fn collectKeys(self: *Emitter, map: Value.Mapping) ![]const []const u8 {
         var keys = std.ArrayList([]const u8).init(self.allocator);
         try keys.ensureTotalCapacity(map.count());
         var iter = map.iterator();
@@ -200,9 +200,9 @@ pub const Emitter = struct {
     }
 
     fn emitMappingInline(self: *Emitter, map: Value.Mapping, base_indent: usize) EmitError!void {
-        const keys = try self.sortedKeys(map);
-        defer self.allocator.free(keys);
         const saved = self.indent_level;
+        const keys = try self.collectKeys(map);
+        defer self.allocator.free(keys);
         for (keys, 0..) |key, i| {
             if (i > 0) {
                 self.indent_level = base_indent;
@@ -222,7 +222,7 @@ pub const Emitter = struct {
             try self.emitMappingFlow(map);
             return;
         }
-        const keys = try self.sortedKeys(map);
+        const keys = try self.collectKeys(map);
         defer self.allocator.free(keys);
         for (keys, 0..) |key, i| {
             if (i > 0 or self.indent_level > 0) {
@@ -234,7 +234,7 @@ pub const Emitter = struct {
 
     fn emitMappingFlow(self: *Emitter, map: Value.Mapping) EmitError!void {
         try self.writer.writeByte('{');
-        const keys = try self.sortedKeys(map);
+        const keys = try self.collectKeys(map);
         defer self.allocator.free(keys);
         for (keys, 0..) |key, i| {
             if (i > 0) try self.writer.writeAll(", ");
@@ -246,9 +246,7 @@ pub const Emitter = struct {
     }
 
     fn writeIndent(self: *Emitter) EmitError!void {
-        for (0..self.indent_level) |_| {
-            try self.writer.writeByte(' ');
-        }
+        try self.writer.writeByteNTimes(' ', self.indent_level);
     }
 
     fn writeNewlineIndent(self: *Emitter) EmitError!void {

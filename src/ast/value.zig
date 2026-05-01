@@ -32,29 +32,109 @@ pub const Value = union(enum) {
     }
 
     pub fn looksLikeNumber(s: []const u8) bool {
-        if (std.fmt.parseInt(i64, s, 10)) |_| return true else |_| {}
-        if (std.fmt.parseFloat(f64, s)) |_| return true else |_| {}
-        return false;
+        if (s.len == 0) return false;
+        const first = s[0];
+        if (first == '+' or first == '-') {
+            if (s.len == 1) return false;
+        } else if (first < '0' or first > '9') {
+            if (first != '.') return false;
+        }
+        var seen_dot = false;
+        var seen_e = false;
+        var seen_digit = false;
+        for (s, 0..) |ch, i| {
+            switch (ch) {
+                '0'...'9' => {
+                    seen_digit = true;
+                },
+                '.' => {
+                    if (seen_dot or seen_e) return false;
+                    seen_dot = true;
+                },
+                'e', 'E' => {
+                    if (seen_e or !seen_digit) return false;
+                    seen_e = true;
+                },
+                '+', '-' => {
+                    if (i == 0) continue;
+                    const prev = s[i - 1];
+                    if (prev != 'e' and prev != 'E') return false;
+                },
+                '_' => {},
+                else => return false,
+            }
+        }
+        return seen_digit;
+    }
+
+    fn resolveKeyword(str: []const u8) ?Value {
+        if (str.len == 0) return .null;
+        switch (str[0]) {
+            'n' => {
+                if (matchesVariants(str, "null", "Null", "NULL")) return .null;
+            },
+            'N' => {
+                if (std.mem.eql(u8, str, "Null") or std.mem.eql(u8, str, "NULL")) return .null;
+                if (std.mem.eql(u8, str, "NaN")) return .{ .float = std.math.nan(f64) };
+            },
+            't', 'T' => {
+                if (matchesVariants(str, "true", "True", "TRUE")) return .{ .boolean = true };
+            },
+            'f', 'F' => {
+                if (matchesVariants(str, "false", "False", "FALSE")) return .{ .boolean = false };
+            },
+            '~' => return .null,
+            else => {},
+        }
+        return null;
+    }
+
+    fn resolveNumber(str: []const u8) ?Value {
+        if (str.len == 0) return null;
+        switch (str[0]) {
+            '0' => {
+                if (str.len == 1) return .{ .integer = 0 };
+                if (resolvePrefixedInt(str)) |v| return v;
+                if (std.fmt.parseInt(i64, str, 10)) |i| return .{ .integer = i } else |_| {}
+            },
+            '1'...'9' => {
+                if (std.fmt.parseInt(i64, str, 10)) |i| return .{ .integer = i } else |_| {}
+            },
+            '-', '+' => {
+                if (str.len == 1) return null;
+                if (str[0] == '-') {
+                    if (matchesVariants(str, "-.inf", "-.Inf", "-.INF")) return .{ .float = -std.math.inf(f64) };
+                }
+                if (resolvePrefixedInt(str)) |v| return v;
+                if (std.fmt.parseInt(i64, str, 10)) |i| return .{ .integer = i } else |_| {}
+            },
+            '.' => {
+                if (matchesVariants(str, ".inf", ".Inf", ".INF")) return .{ .float = std.math.inf(f64) };
+                if (matchesVariants(str, ".nan", ".NaN", ".NAN")) return .{ .float = std.math.nan(f64) };
+            },
+            else => return null,
+        }
+        if (std.fmt.parseFloat(f64, str)) |f| return .{ .float = f } else |_| {}
+        return null;
+    }
+
+    fn resolvePrefixedInt(str: []const u8) ?Value {
+        if (str.len < 3) return null;
+        const second = str[1];
+        if (second == 'x' or second == 'X') {
+            if (std.fmt.parseInt(i64, str[2..], 16)) |i| return .{ .integer = i } else |_| {}
+        } else if (second == 'o' or second == 'O') {
+            if (std.fmt.parseInt(i64, str[2..], 8)) |i| return .{ .integer = i } else |_| {}
+        } else if (second == 'b' or second == 'B') {
+            if (std.fmt.parseInt(i64, str[2..], 2)) |i| return .{ .integer = i } else |_| {}
+        }
+        return null;
     }
 
     pub fn resolveScalar(str: []const u8) Value {
         if (str.len == 0) return .null;
-        if (matchesVariants(str, "null", "Null", "NULL") or std.mem.eql(u8, str, "~")) return .null;
-        if (matchesVariants(str, "true", "True", "TRUE")) return .{ .boolean = true };
-        if (matchesVariants(str, "false", "False", "FALSE")) return .{ .boolean = false };
-
-        if (tryParsePrefixedInt(str, "0x", "0X", 16)) |i| return .{ .integer = i };
-        if (tryParsePrefixedInt(str, "0o", "0O", 8)) |i| return .{ .integer = i };
-        if (tryParsePrefixedInt(str, "0b", "0B", 2)) |i| return .{ .integer = i };
-
-        if (std.fmt.parseInt(i64, str, 10)) |i| return .{ .integer = i } else |_| {}
-
-        if (matchesVariants(str, ".inf", ".Inf", ".INF")) return .{ .float = std.math.inf(f64) };
-        if (matchesVariants(str, "-.inf", "-.Inf", "-.INF")) return .{ .float = -std.math.inf(f64) };
-        if (matchesVariants(str, ".nan", ".NaN", ".NAN")) return .{ .float = std.math.nan(f64) };
-
-        if (std.fmt.parseFloat(f64, str)) |f| return .{ .float = f } else |_| {}
-
+        if (resolveKeyword(str)) |v| return v;
+        if (resolveNumber(str)) |v| return v;
         return .{ .string = str };
     }
 

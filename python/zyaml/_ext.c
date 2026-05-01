@@ -34,6 +34,7 @@ extern bool zyaml_value_sequence_append(ZyamlValue *seq, ZyamlValue *val);
 extern ZyamlValue *zyaml_value_mapping(void);
 extern bool zyaml_value_mapping_put(ZyamlValue *map, const char *key, size_t key_len, ZyamlValue *val);
 extern char *zyaml_stringify_options(ZyamlValue *value, int indent, bool sort_keys, int flow, size_t *out_len);
+extern ZyamlValue *zyaml_mapping_get_value_borrow(ZyamlValue *value, size_t index);
 extern void zyaml_free_cstr(char *s);
 
 /* ---- load: Value -> Python ---- */
@@ -70,8 +71,7 @@ static PyObject *value_to_py(ZyamlValue *v) {
             const char *kptr = zyaml_mapping_get_key_borrow(v, i, &klen);
             PyObject *key = PyUnicode_FromStringAndSize(kptr, klen);
             if (!key) { Py_DECREF(dict); return NULL; }
-            ZyamlValue *vv = zyaml_mapping_get_borrow(v, kptr, klen);
-            PyObject *val = value_to_py(vv);
+            PyObject *val = value_to_py(zyaml_mapping_get_value_borrow(v, i));
             if (!val) { Py_DECREF(key); Py_DECREF(dict); return NULL; }
             PyDict_SetItem(dict, key, val);
             Py_DECREF(key);

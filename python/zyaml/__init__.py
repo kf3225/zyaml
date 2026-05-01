@@ -274,10 +274,7 @@ def _read_cstr(ptr) -> str:
     addr: int = ptr if isinstance(ptr, int) else ctypes.cast(ptr, ctypes.c_void_p).value or 0
     if addr == 0:
         return ""
-    length = 0
-    while ctypes.c_char.from_address(addr + length).value != b"\x00":
-        length += 1
-    return ctypes.string_at(addr, length).decode("utf-8")
+    return ctypes.string_at(addr).decode("utf-8")
 
 
 def _read_borrowed(ptr: int, length: int) -> str:
@@ -636,7 +633,9 @@ class YamlValue:
         self._ptr = ptr
 
     def __del__(self):
-        self._ptr = 0
+        if self._ptr:
+            _lib.zyaml_free(self._ptr)
+            self._ptr = 0
 
     def __enter__(self):
         return self
