@@ -860,9 +860,7 @@ pub const Parser = struct {
         var key_consumed = false;
         errdefer if (!key_consumed) key.deinit(self.allocator);
 
-        while (self.scanner.peek() == '\n') {
-            self.scanner.skip();
-        }
+        self.skipCommentsAndBlankLines();
         const current_indent = self.scanner.countIndentAtLineStart();
         if (current_indent == indent and self.scanner.peek() == ':') {
             self.scanner.skip();
