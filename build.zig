@@ -96,15 +96,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_unit_tests.step);
 
     const yaml_spec_test_files = [_][]const u8{
-        "src/test/yaml_spec/collections.zig",
-        "src/test/yaml_spec/scalars_flow.zig",
-        "src/test/yaml_spec/scalars_block.zig",
-        "src/test/yaml_spec/flow_style.zig",
-        "src/test/yaml_spec/structures.zig",
-        "src/test/yaml_spec/tags.zig",
-        "src/test/yaml_spec/comments.zig",
-        "src/test/yaml_spec/indentation.zig",
-        "src/test/yaml_spec/escaping.zig",
         "src/test/yaml_spec/schemas.zig",
         "src/test/yaml_spec/edge_cases.zig",
         "src/test/yaml_spec/errors.zig",
@@ -135,4 +126,16 @@ pub fn build(b: *std.Build) void {
         .root_module = fixture_test_mod,
     });
     test_step.dependOn(&b.addRunArtifact(fixture_test).step);
+
+    const suite_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/test/yaml_test_suite.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    suite_test_mod.addImport("zyaml", lib_mod);
+
+    const suite_test = b.addTest(.{
+        .root_module = suite_test_mod,
+    });
+    test_step.dependOn(&b.addRunArtifact(suite_test).step);
 }
