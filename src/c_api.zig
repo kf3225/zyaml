@@ -8,6 +8,8 @@ const c_alloc = std.heap.c_allocator;
 
 threadlocal var tl_error_msg: ?[*:0]u8 = null;
 
+// WARNING: Callers must not pass untrusted paths to zyaml_parse_file.
+
 fn setError(comptime fmt: []const u8, args: anytype) void {
     if (tl_error_msg) |ptr| {
         c_alloc.free(std.mem.sliceTo(ptr, 0));
@@ -42,7 +44,10 @@ fn fromValue(v: Value, arena: *std.heap.ArenaAllocator) *YamlValueOpaque {
     return @ptrCast(@alignCast(box));
 }
 
+const BOX_MAGIC = 0x5A59414C;
+
 const BoxedValue = struct {
+    magic: u32 = BOX_MAGIC,
     value: Value,
     arena: ?*std.heap.ArenaAllocator,
 };
@@ -70,6 +75,12 @@ fn boxValue(v: Value) ?*YamlValueOpaque {
 fn allocDupZ(s: []const u8) ?[*:0]const u8 {
     const duped = c_alloc.dupeZ(u8, s) catch return null;
     return duped.ptr;
+}
+
+fn freeNullTerminated(s: ?[*:0]u8) void {
+    if (s) |ptr| {
+        c_alloc.free(std.mem.sliceTo(ptr, 0));
+    }
 }
 
 fn parseWithArena(source: []const u8, error_context: ?[]const u8) ?*YamlValueOpaque {
@@ -101,6 +112,14 @@ export fn zyaml_parse(input: [*]const u8, len: usize) ?*YamlValueOpaque {
 export fn zyaml_parse_file(path: [*:0]const u8) ?*YamlValueOpaque {
     clearError();
     const path_slice = std.mem.sliceTo(path, 0);
+    if (path_slice.len == 0) {
+        setError("empty path", .{});
+        return null;
+    }
+    if (std.mem.indexOf(u8, path_slice, "..") != null) {
+        setError("path traversal detected: '{s}'", .{path_slice});
+        return null;
+    }
     const file = std.fs.cwd().openFile(path_slice, .{}) catch |err| {
         setError("failed to open '{s}': {}", .{ path_slice, err });
         return null;
@@ -115,10 +134,13 @@ export fn zyaml_parse_file(path: [*:0]const u8) ?*YamlValueOpaque {
 }
 
 export fn zyaml_free(value: ?*YamlValueOpaque) void {
-    if (toBoxedValue(value)) |b| {
+    if (value) |p| {
+        const b: *BoxedValue = @ptrCast(@alignCast(p));
+        if (b.magic != BOX_MAGIC) return;
         if (b.arena) |arena| {
             arena.deinit();
             c_alloc.destroy(arena);
+            c_alloc.destroy(b);
         } else {
             b.value.deinit(c_alloc);
             c_alloc.destroy(b);
@@ -211,13 +233,9 @@ export fn zyaml_mapping_get(value: ?*YamlValueOpaque, key: [*]const u8, key_len:
 export fn zyaml_mapping_get_key(value: ?*YamlValueOpaque, index: usize) ?[*:0]const u8 {
     if (toValue(value)) |v| {
         if (v.* == .mapping) {
-            var iter = v.mapping.iterator();
-            var i: usize = 0;
-            while (iter.next()) |entry| {
-                if (i == index) {
-                    return allocDupZ(entry.key_ptr.*);
-                }
-                i += 1;
+            const entries = v.mapping.unmanaged.entries;
+            if (index < entries.len) {
+                return allocDupZ(entries.items(.key)[index]);
             }
         }
     }
@@ -302,6 +320,7 @@ export fn zyaml_to_json(value: ?*YamlValueOpaque, out_len: *usize) ?[*:0]const u
     out_len.* = 0;
     if (toValue(value)) |v| {
         var buf = std.ArrayList(u8).init(c_alloc);
+        buf.ensureTotalCapacity(256) catch return null;
         valueToJson(v, &buf) catch {
             buf.deinit();
             return null;
@@ -327,63 +346,102 @@ const json_escape_map = blk: {
     break :blk table;
 };
 
+const hex_nibbles = blk: {
+    var table: [256][2]u8 = undefined;
+    const hex = "0123456789abcdef";
+    for (&table, 0..) |*entry, i| {
+        entry.* = .{ hex[i >> 4], hex[i & 0xf] };
+    }
+    break :blk table;
+};
+
 fn writeJsonEscapedChar(buf: *std.ArrayList(u8), ch: u8) JsonWriteError!void {
     if (json_escape_map[ch]) |escaped| {
         try buf.appendSlice(escaped);
         return;
     }
-    if (ch < 0x20) {
+    if (ch < 0x20 or ch == 0x7F or (ch >= 0x80 and ch < 0xC0)) {
         try buf.appendSlice("\\u00");
-        const hex = "0123456789abcdef";
-        try buf.append(hex[ch >> 4]);
-        try buf.append(hex[ch & 0xf]);
+        try buf.appendSlice(&hex_nibbles[ch]);
     } else {
         try buf.append(ch);
     }
 }
 
+const json_needs_escape = blk: {
+    var table: [256]bool = @splat(false);
+    table['"'] = true;
+    table['\\'] = true;
+    table['\n'] = true;
+    table['\r'] = true;
+    table['\t'] = true;
+    for (0..0x20) |i| table[i] = true;
+    table[0x7F] = true;
+    for (0x80..0xC0) |i| table[i] = true;
+    break :blk table;
+};
+
 fn writeJsonString(buf: *std.ArrayList(u8), s: []const u8) JsonWriteError!void {
     try buf.append('"');
-    for (s) |ch| try writeJsonEscapedChar(buf, ch);
+    var start: usize = 0;
+    for (s, 0..) |ch, i| {
+        if (json_needs_escape[ch]) {
+            if (i > start) try buf.appendSlice(s[start..i]);
+            try writeJsonEscapedChar(buf, ch);
+            start = i + 1;
+        }
+    }
+    if (start < s.len) try buf.appendSlice(s[start..]);
     try buf.append('"');
 }
 
+const MAX_JSON_DEPTH = 256;
+
 fn valueToJson(v: *const Value, buf: *std.ArrayList(u8)) JsonWriteError!void {
+    return valueToJsonDepth(v, buf, 0);
+}
+
+fn valueToJsonDepth(v: *const Value, buf: *std.ArrayList(u8), depth: usize) JsonWriteError!void {
+    if (depth > MAX_JSON_DEPTH) return error.OutOfMemory;
     switch (v.*) {
-        .null => try buf.writer().writeAll("null"),
-        .boolean => |b| try buf.writer().writeAll(if (b) "true" else "false"),
-        .integer => |i| try std.fmt.formatInt(i, 10, .lower, .{}, buf.writer()),
+        .null => try buf.appendSlice("null"),
+        .boolean => |b| try buf.appendSlice(if (b) "true" else "false"),
+        .integer => |i| {
+            var tmp: [20]u8 = undefined;
+            const len = std.fmt.formatIntBuf(&tmp, i, 10, .lower, .{});
+            try buf.appendSlice(tmp[0..len]);
+        },
         .float => |f| try writeJsonFloat(buf, f),
         .string => |s| try writeJsonString(buf, s),
-        .sequence => |seq| try writeJsonSequence(buf, seq),
-        .mapping => |map| try writeJsonMapping(buf, map),
+        .sequence => |seq| try writeJsonSequenceDepth(buf, seq, depth),
+        .mapping => |map| try writeJsonMappingDepth(buf, map, depth),
     }
 }
 
 fn writeJsonFloat(buf: *std.ArrayList(u8), f: f64) JsonWriteError!void {
     if (std.math.isNan(f)) {
-        try buf.writer().writeAll("null");
+        try buf.appendSlice("null");
     } else if (std.math.isInf(f)) {
-        if (f > 0) try buf.writer().writeAll("1e999") else try buf.writer().writeAll("-1e999");
+        if (f > 0) try buf.appendSlice("1e999") else try buf.appendSlice("-1e999");
     } else {
         var tmp: [64]u8 = undefined;
         const str = std.fmt.formatFloat(&tmp, f, .{}) catch "null";
-        try buf.writer().writeAll(str);
+        try buf.appendSlice(str);
     }
 }
 
 const JsonWriteError = std.mem.Allocator.Error;
 
-fn writeJsonSequence(buf: *std.ArrayList(u8), seq: Value.Sequence) JsonWriteError!void {
+fn writeJsonSequenceDepth(buf: *std.ArrayList(u8), seq: Value.Sequence, depth: usize) JsonWriteError!void {
     try buf.append('[');
     for (seq.items, 0..) |*item, i| {
         if (i > 0) try buf.append(',');
-        try valueToJson(item, buf);
+        try valueToJsonDepth(item, buf, depth + 1);
     }
     try buf.append(']');
 }
 
-fn writeJsonMapping(buf: *std.ArrayList(u8), map: Value.Mapping) JsonWriteError!void {
+fn writeJsonMappingDepth(buf: *std.ArrayList(u8), map: Value.Mapping, depth: usize) JsonWriteError!void {
     try buf.append('{');
     var iter = map.iterator();
     var first = true;
@@ -392,7 +450,7 @@ fn writeJsonMapping(buf: *std.ArrayList(u8), map: Value.Mapping) JsonWriteError!
         first = false;
         try writeJsonString(buf, entry.key_ptr.*);
         try buf.append(':');
-        try valueToJson(entry.value_ptr, buf);
+        try valueToJsonDepth(entry.value_ptr, buf, depth + 1);
     }
     try buf.append('}');
 }
@@ -463,13 +521,14 @@ fn nullTerminatedOutput(output: []const u8, out_len: *usize) ?[*:0]const u8 {
 }
 
 fn buildYamlOutput(value: Value, options: zyaml.EmitOptions, explicit_start: bool, explicit_end: bool, out_len: *usize) ?[*:0]const u8 {
-    const output = zyaml.stringifyWithOptions(c_alloc, value, options) catch return null;
-    defer c_alloc.free(output);
-
     var result = std.ArrayList(u8).init(c_alloc);
     errdefer result.deinit();
+    result.ensureTotalCapacity(256) catch return null;
     if (explicit_start) result.appendSlice("---\n") catch return null;
-    result.appendSlice(output) catch return null;
+
+    var emitter = zyaml.Emitter.init(c_alloc, result.writer(), options);
+    emitter.emitValue(value) catch return null;
+
     result.appendSlice("\n") catch return null;
     if (explicit_end) result.appendSlice("...\n") catch return null;
 
@@ -514,8 +573,8 @@ export fn zyaml_value_float(f: f64) ?*YamlValueOpaque {
 }
 
 export fn zyaml_value_string(s: [*]const u8, len: usize) ?*YamlValueOpaque {
-    const duped = c_alloc.dupeZ(u8, s[0..len]) catch return null;
-    return boxValue(.{ .string = duped[0..len :0] });
+    const duped = c_alloc.dupe(u8, s[0..len]) catch return null;
+    return boxValue(.{ .string = duped });
 }
 
 export fn zyaml_value_sequence() ?*YamlValueOpaque {
@@ -543,8 +602,8 @@ export fn zyaml_value_mapping_put(map: ?*YamlValueOpaque, key: [*]const u8, key_
     if (toBoxedValue(map)) |m| {
         if (m.value == .mapping) {
             if (toBoxedValue(val)) |v| {
-                const duped_key = c_alloc.dupeZ(u8, key[0..key_len]) catch return false;
-                m.value.mapping.put(duped_key[0..key_len :0], v.value) catch {
+                const duped_key = c_alloc.dupe(u8, key[0..key_len]) catch return false;
+                m.value.mapping.put(duped_key, v.value) catch {
                     c_alloc.free(duped_key);
                     return false;
                 };
@@ -574,16 +633,17 @@ export fn zyaml_json_to_yaml(
         setError("json parse error: {}", .{err});
         return null;
     };
-    defer parsed.deinit();
 
     var value = jsonToValue(c_alloc, parsed.value) catch |err| {
+        parsed.deinit();
         setError("json to value error: {}", .{err});
         return null;
     };
-    defer value.deinit(c_alloc);
+    parsed.deinit();
 
     const options = buildEmitOptions(indent, sort_keys, flow_style);
     const result = buildYamlOutput(value, options, explicit_start, explicit_end, out_len);
+    value.deinit(c_alloc);
     if (result == null) setError("stringify error", .{});
     return result;
 }
