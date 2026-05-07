@@ -714,7 +714,7 @@ pub const Parser = struct {
             var kv = key_val;
             kv.deinit(self.allocator);
 
-            self.scanner.skipWhitespaceAndNewlines();
+            self.skipFlowWhitespaceAndComments();
 
             if (self.scanner.peek() != ':') {
                 self.allocator.free(key_str);
