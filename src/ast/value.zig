@@ -13,47 +13,62 @@ pub const Value = union(enum) {
     pub const Mapping = std.StringArrayHashMap(Value);
 
     fn matchesVariants(s: []const u8, comptime v1: []const u8, comptime v2: []const u8, comptime v3: []const u8) bool {
+        comptime {
+            std.debug.assert(v1.len == v2.len and v2.len == v3.len);
+        }
+        if (s.len != v1.len) return false;
         return std.mem.eql(u8, s, v1) or std.mem.eql(u8, s, v2) or std.mem.eql(u8, s, v3);
     }
 
     pub fn isReservedWord(s: []const u8) bool {
-        if (matchesVariants(s, "null", "Null", "NULL")) return true;
-        if (std.mem.eql(u8, s, "~")) return true;
-        if (matchesVariants(s, "true", "True", "TRUE")) return true;
-        if (matchesVariants(s, "false", "False", "FALSE")) return true;
-        return false;
+        if (s.len == 0) return false;
+        switch (s[0]) {
+            'n' => return std.mem.eql(u8, s, "null"),
+            'N' => return std.mem.eql(u8, s, "Null") or std.mem.eql(u8, s, "NULL"),
+            '~' => return s.len == 1,
+            't' => return std.mem.eql(u8, s, "true"),
+            'T' => return std.mem.eql(u8, s, "True") or std.mem.eql(u8, s, "TRUE"),
+            'f' => return std.mem.eql(u8, s, "false"),
+            'F' => return std.mem.eql(u8, s, "False") or std.mem.eql(u8, s, "FALSE"),
+            else => return false,
+        }
     }
 
     pub fn looksLikeNumber(s: []const u8) bool {
         if (s.len == 0) return false;
         const first = s[0];
+        var start: usize = 0;
         if (first == '+' or first == '-') {
             if (s.len == 1) return false;
+            start = 1;
         } else if (first < '0' or first > '9') {
             if (first != '.') return false;
         }
-        var seen_dot = false;
+        var seen_dot = first == '.';
         var seen_e = false;
-        var seen_digit = false;
-        for (s, 0..) |ch, i| {
+        var seen_digit = first >= '0' and first <= '9';
+        var allow_sign = false;
+        for (s[start..]) |ch| {
             switch (ch) {
                 '0'...'9' => {
                     seen_digit = true;
+                    allow_sign = false;
                 },
                 '.' => {
                     if (seen_dot or seen_e) return false;
                     seen_dot = true;
+                    allow_sign = false;
                 },
                 'e', 'E' => {
                     if (seen_e or !seen_digit) return false;
                     seen_e = true;
+                    allow_sign = true;
                 },
                 '+', '-' => {
-                    if (i == 0) continue;
-                    const prev = s[i - 1];
-                    if (prev != 'e' and prev != 'E') return false;
+                    if (!allow_sign) return false;
+                    allow_sign = false;
                 },
-                '_' => {},
+                '_' => allow_sign = false,
                 else => return false,
             }
         }
@@ -64,17 +79,23 @@ pub const Value = union(enum) {
         if (str.len == 0) return .null;
         switch (str[0]) {
             'n' => {
-                if (matchesVariants(str, "null", "Null", "NULL")) return .null;
+                if (std.mem.eql(u8, str, "null")) return .null;
             },
             'N' => {
                 if (std.mem.eql(u8, str, "Null") or std.mem.eql(u8, str, "NULL")) return .null;
                 if (std.mem.eql(u8, str, "NaN")) return .{ .float = std.math.nan(f64) };
             },
-            't', 'T' => {
-                if (matchesVariants(str, "true", "True", "TRUE")) return .{ .boolean = true };
+            't' => {
+                if (std.mem.eql(u8, str, "true")) return .{ .boolean = true };
             },
-            'f', 'F' => {
-                if (matchesVariants(str, "false", "False", "FALSE")) return .{ .boolean = false };
+            'T' => {
+                if (std.mem.eql(u8, str, "True") or std.mem.eql(u8, str, "TRUE")) return .{ .boolean = true };
+            },
+            'f' => {
+                if (std.mem.eql(u8, str, "false")) return .{ .boolean = false };
+            },
+            'F' => {
+                if (std.mem.eql(u8, str, "False") or std.mem.eql(u8, str, "FALSE")) return .{ .boolean = false };
             },
             '~' => return .null,
             else => {},
@@ -203,7 +224,7 @@ pub const Value = union(enum) {
                 errdefer new_seq.deinit();
                 try new_seq.ensureTotalCapacity(seq.items.len);
                 for (seq.items) |item| {
-                    try new_seq.append(try item.deepClone(allocator));
+                    new_seq.appendAssumeCapacity(try item.deepClone(allocator));
                 }
                 return .{ .sequence = new_seq };
             },
@@ -215,7 +236,7 @@ pub const Value = union(enum) {
                 while (iter.next()) |entry| {
                     const key = try allocator.dupe(u8, entry.key_ptr.*);
                     errdefer allocator.free(key);
-                    try new_map.put(key, try entry.value_ptr.deepClone(allocator));
+                    new_map.putAssumeCapacity(key, try entry.value_ptr.deepClone(allocator));
                 }
                 return .{ .mapping = new_map };
             },
