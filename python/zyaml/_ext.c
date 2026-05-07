@@ -96,7 +96,11 @@ static ZyamlValue *py_to_value(PyObject *obj) {
     if (PyLong_Check(obj)) {
         int overflow = 0;
         long long v = PyLong_AsLongLongAndOverflow(obj, &overflow);
-        if (overflow) return zyaml_value_float((double)PyLong_AsDouble(obj));
+        if (overflow) {
+            double d = PyLong_AsDouble(obj);
+            if (d == -1.0 && PyErr_Occurred()) return NULL;
+            return zyaml_value_float(d);
+        }
         return zyaml_value_int((int64_t)v);
     }
     if (PyFloat_Check(obj)) return zyaml_value_float(PyFloat_AsDouble(obj));

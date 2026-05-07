@@ -249,6 +249,8 @@ def _setup_collection_api(lib: ctypes.CDLL) -> None:
         ctypes.POINTER(ctypes.c_size_t),
     ]
     lib.zyaml_mapping_get_key_borrow.restype = ctypes.c_void_p
+    lib.zyaml_mapping_get_value_borrow.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    lib.zyaml_mapping_get_value_borrow.restype = ctypes.c_void_p
 
 
 def _setup_string_api(lib: ctypes.CDLL) -> None:
@@ -260,7 +262,14 @@ def _setup_string_api(lib: ctypes.CDLL) -> None:
     lib.zyaml_free_json.restype = None
 
 
-_lib = _init_lib()
+_lib: ctypes.CDLL | None = None
+
+
+def _get_lib() -> ctypes.CDLL:
+    global _lib
+    if _lib is None:
+        _lib = _init_lib()
+    return _lib
 
 
 # ---------------------------------------------------------------------------
@@ -284,9 +293,9 @@ def _read_borrowed(ptr: int, length: int) -> str:
 
 
 def _value_to_python(ptr: int) -> Any:
-    t = _lib.zyaml_type(ptr)
+    t = _get_lib().zyaml_type(ptr)
     if t == YamlType.STRING:
-        return _read_cstr(_lib.zyaml_as_string(ptr))
+        return _read_cstr(_get_lib().zyaml_as_string(ptr))
     if t == YamlType.SEQUENCE:
         return _seq_to_python(ptr)
     if t == YamlType.MAPPING:
@@ -294,53 +303,52 @@ def _value_to_python(ptr: int) -> Any:
     if t == YamlType.NULL:
         return None
     if t == YamlType.BOOLEAN:
-        return bool(_lib.zyaml_as_bool(ptr))
+        return bool(_get_lib().zyaml_as_bool(ptr))
     if t == YamlType.INTEGER:
-        return int(_lib.zyaml_as_integer(ptr))
+        return int(_get_lib().zyaml_as_integer(ptr))
     if t == YamlType.FLOAT:
-        return float(_lib.zyaml_as_float(ptr))
+        return float(_get_lib().zyaml_as_float(ptr))
     return None
 
 
 def _seq_to_python(ptr: int) -> list[Any]:
-    n = _lib.zyaml_sequence_len(ptr)
-    return [_value_to_python(_lib.zyaml_sequence_get_borrow(ptr, i)) for i in range(n)]
+    n = _get_lib().zyaml_sequence_len(ptr)
+    return [_value_to_python(_get_lib().zyaml_sequence_get_borrow(ptr, i)) for i in range(n)]
 
 
 def _mapping_to_python(ptr: int) -> dict[str, Any]:
-    n = _lib.zyaml_mapping_len(ptr)
+    n = _get_lib().zyaml_mapping_len(ptr)
     out_len = ctypes.c_size_t(0)
     result: dict[str, Any] = {}
     for i in range(n):
-        kp = _lib.zyaml_mapping_get_key_borrow(ptr, i, ctypes.byref(out_len))
+        kp = _get_lib().zyaml_mapping_get_key_borrow(ptr, i, ctypes.byref(out_len))
         key = _read_borrowed(kp, out_len.value)
-        encoded = key.encode("utf-8")
-        vp = _lib.zyaml_mapping_get_borrow(ptr, encoded, len(encoded))
+        vp = _get_lib().zyaml_mapping_get_value_borrow(ptr, i)
         result[key] = _value_to_python(vp)
     return result
 
 
-def _parse_to_python(content: str) -> Any:
+def _parse_to_python(content: str | bytes) -> Any:
     try:
+        if isinstance(content, bytes):
+            content = content.decode("utf-8")
         return _ext.load(content)
     except RuntimeError as e:
         raise YAMLError(str(e)) from e
 
 
-def _get_stream_data(stream) -> str:
+def _get_stream_data(stream) -> str | bytes:
     if isinstance(stream, str):
         return stream
     if isinstance(stream, bytes):
-        return stream.decode("utf-8")
+        return stream
     if hasattr(stream, "read"):
         return _read_stream(stream)
     raise TypeError(f"expected str, bytes, or file-like object, got {type(stream).__name__}")
 
 
-def _read_stream(stream) -> str:
+def _read_stream(stream) -> str | bytes:
     data = stream.read()
-    if isinstance(data, bytes):
-        return data.decode("utf-8")
     return data
 
 
@@ -483,6 +491,8 @@ def safe_load(stream, /, *, type: type | None = None):
 
 def safe_load_all(stream) -> Iterator:
     data = _get_stream_data(stream)
+    if isinstance(data, bytes):
+        data = data.decode("utf-8")
     if not data.strip():
         return
     for doc in data.split("\n---"):
@@ -634,7 +644,7 @@ class YamlValue:
 
     def __del__(self):
         if self._ptr:
-            _lib.zyaml_free(self._ptr)
+            _get_lib().zyaml_free(self._ptr)
             self._ptr = 0
 
     def __enter__(self):
@@ -645,16 +655,16 @@ class YamlValue:
 
     @property
     def type(self) -> YamlType:
-        return YamlType(_lib.zyaml_type(self._ptr))
+        return YamlType(_get_lib().zyaml_type(self._ptr))
 
     def to_python(self) -> Any:
         return _value_to_python(self._ptr)
 
     def __len__(self) -> int:
         if self.type == YamlType.SEQUENCE:
-            return _lib.zyaml_sequence_len(self._ptr)
+            return _get_lib().zyaml_sequence_len(self._ptr)
         if self.type == YamlType.MAPPING:
-            return _lib.zyaml_mapping_len(self._ptr)
+            return _get_lib().zyaml_mapping_len(self._ptr)
         return 0
 
     def __getitem__(self, key: Union[int, str]) -> "YamlValue":
@@ -665,24 +675,25 @@ class YamlValue:
         raise TypeError(f"Cannot index {self.type.name} with {type(key).__name__}")
 
     def _get_seq_item(self, index: int) -> "YamlValue":
-        ptr = _lib.zyaml_sequence_get(self._ptr, index)
+        ptr = _get_lib().zyaml_sequence_get(self._ptr, index)
         if not ptr:
             raise IndexError(index)
         return YamlValue(ptr)
 
     def _get_map_item(self, key: str) -> "YamlValue":
         encoded = key.encode("utf-8")
-        ptr = _lib.zyaml_mapping_get(self._ptr, encoded, len(encoded))
+        ptr = _get_lib().zyaml_mapping_get(self._ptr, encoded, len(encoded))
         if not ptr:
             raise KeyError(key)
         return YamlValue(ptr)
 
     def __contains__(self, key: Union[int, str]) -> bool:
-        try:
-            self[key]
-            return True
-        except (IndexError, KeyError):
-            return False
+        if isinstance(key, str):
+            encoded = key.encode("utf-8")
+            return bool(_get_lib().zyaml_mapping_get_borrow(self._ptr, encoded, len(encoded)))
+        if isinstance(key, int):
+            return 0 <= key < len(self)
+        return False
 
     def __iter__(self) -> Iterator:
         if self.type == YamlType.SEQUENCE:
@@ -709,20 +720,20 @@ class YamlValue:
             return default
 
     def stringify(self) -> str:
-        return _read_cstr(_lib.zyaml_stringify(self._ptr))
+        return _read_cstr(_get_lib().zyaml_stringify(self._ptr))
 
     def __repr__(self) -> str:
         t = self.type
         if t == YamlType.NULL:
             return "YamlValue(null)"
         if t == YamlType.BOOLEAN:
-            return f"YamlValue(bool={_lib.zyaml_as_bool(self._ptr)})"
+            return f"YamlValue(bool={_get_lib().zyaml_as_bool(self._ptr)})"
         if t == YamlType.INTEGER:
-            return f"YamlValue(int={_lib.zyaml_as_integer(self._ptr)})"
+            return f"YamlValue(int={_get_lib().zyaml_as_integer(self._ptr)})"
         if t == YamlType.FLOAT:
-            return f"YamlValue(float={_lib.zyaml_as_float(self._ptr)})"
+            return f"YamlValue(float={_get_lib().zyaml_as_float(self._ptr)})"
         if t == YamlType.STRING:
-            return f"YamlValue(string={_read_cstr(_lib.zyaml_as_string(self._ptr))!r})"
+            return f"YamlValue(string={_read_cstr(_get_lib().zyaml_as_string(self._ptr))!r})"
         if t == YamlType.SEQUENCE:
             return f"YamlValue(sequence, len={len(self)})"
         if t == YamlType.MAPPING:
@@ -740,31 +751,31 @@ class YamlValue:
 
 
 def _mapping_keys(ptr: int) -> list[str]:
-    n = _lib.zyaml_mapping_len(ptr)
+    n = _get_lib().zyaml_mapping_len(ptr)
     out_len = ctypes.c_size_t(0)
     result: list[str] = []
     for i in range(n):
-        kp = _lib.zyaml_mapping_get_key_borrow(ptr, i, ctypes.byref(out_len))
+        kp = _get_lib().zyaml_mapping_get_key_borrow(ptr, i, ctypes.byref(out_len))
         result.append(_read_borrowed(kp, out_len.value))
     return result
 
 
 def _raise_parse_error() -> None:
-    raw = _lib.zyaml_error_message()
+    raw = _get_lib().zyaml_error_message()
     msg = _read_cstr(raw) if raw else "unknown parse error"
     raise YAMLError(msg)
 
 
 def parse(input: str) -> YamlValue:
     encoded = input.encode("utf-8")
-    ptr = _lib.zyaml_parse(encoded, len(encoded))
+    ptr = _get_lib().zyaml_parse(encoded, len(encoded))
     if not ptr:
         _raise_parse_error()
     return YamlValue(ptr)
 
 
 def parse_file(path: str) -> YamlValue:
-    ptr = _lib.zyaml_parse_file(path.encode("utf-8"))
+    ptr = _get_lib().zyaml_parse_file(path.encode("utf-8"))
     if not ptr:
         _raise_parse_error()
     return YamlValue(ptr)
