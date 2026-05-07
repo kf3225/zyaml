@@ -862,27 +862,32 @@ pub const Parser = struct {
 
         self.skipCommentsAndBlankLines();
         const current_indent = self.scanner.countIndentAtLineStart();
+        var has_colon = false;
         if (current_indent == indent and self.scanner.peek() == ':') {
+            has_colon = true;
             self.scanner.skip();
             self.scanner.skipWhitespace();
-        } else {
-            self.scanner.skipWhitespace();
-            if (self.scanner.peek() != ':') return YamlError.UnexpectedToken;
+        } else if (self.scanner.peek() == ':') {
+            has_colon = true;
             self.scanner.skip();
             self.scanner.skipWhitespace();
         }
 
         var value: Value = .null;
-        if (self.hasInlineValue()) {
-            value = try self.parseValueWithContext(indent + 2, true);
-        } else if (self.scanner.peek() == '\n') {
-            self.scanner.skip();
-            self.skipNewlines();
-            const val_indent = self.scanner.countIndentAtLineStart();
-            if (val_indent > indent) {
-                self.scanner.skipKnownSpaces(val_indent);
-                value = try self.parseValueWithContext(val_indent, true);
+        if (has_colon) {
+            if (self.hasInlineValue()) {
+                value = try self.parseValueWithContext(indent + 2, true);
+            } else if (self.scanner.peek() == '\n') {
+                self.scanner.skip();
+                self.skipNewlines();
+                const val_indent = self.scanner.countIndentAtLineStart();
+                if (val_indent > indent) {
+                    self.scanner.skipKnownSpaces(val_indent);
+                    value = try self.parseValueWithContext(val_indent, true);
+                }
             }
+        } else if (current_indent == indent) {
+            self.scanner.skipKnownSpaces(current_indent);
         }
 
         const key_str = try self.keyToString(key);
