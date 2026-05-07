@@ -85,44 +85,85 @@ pub const Emitter = struct {
 
     fn needsQuoting(s: []const u8) bool {
         if (s.len == 0) return true;
-        if (s[0] == ' ' or s[s.len - 1] == ' ') return true;
-        if (Value.isReservedWord(s)) return true;
-        if (Value.looksLikeNumber(s)) return true;
-        if (needs_quote_first[s[0]]) return true;
+        const first = s[0];
+        if (first == ' ' or s[s.len - 1] == ' ') return true;
+        if (needs_quote_first[first]) return true;
         for (s) |ch| {
             if (needs_quote_any[ch]) return true;
         }
+        if (Value.isReservedWord(s)) return true;
+        if (Value.looksLikeNumber(s)) return true;
         return false;
     }
 
     fn emitSingleQuoted(self: *Emitter, s: []const u8) EmitError!void {
         try self.writer.writeByte('\'');
-        for (s) |ch| {
+        var start: usize = 0;
+        for (s, 0..) |ch, i| {
             if (ch == '\'') {
+                if (i > start) try self.writer.writeAll(s[start..i]);
                 try self.writer.writeAll("''");
-            } else {
-                try self.writer.writeByte(ch);
+                start = i + 1;
             }
         }
+        if (start < s.len) try self.writer.writeAll(s[start..]);
         try self.writer.writeByte('\'');
     }
 
-    fn collectKeys(self: *Emitter, map: Value.Mapping) ![]const []const u8 {
-        var keys = std.ArrayList([]const u8).init(self.allocator);
-        try keys.ensureTotalCapacity(map.count());
-        var iter = map.iterator();
-        while (iter.next()) |entry| {
-            try keys.append(entry.key_ptr.*);
-        }
-        if (self.options.sort_keys) {
-            std.mem.sort([]const u8, keys.items, {}, struct {
-                fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                    return std.mem.lessThan(u8, a, b);
+    const MapIter = struct {
+        const Mode = union(enum) {
+            sorted: []const []const u8,
+            unsorted: Value.Mapping.Iterator,
+        };
+
+        const Entry = struct { key: []const u8, value: Value, is_first: bool };
+
+        mode: Mode,
+        map: Value.Mapping,
+        index: usize,
+        allocator: std.mem.Allocator,
+
+        fn init(allocator: std.mem.Allocator, map: Value.Mapping, sort_keys: bool) !MapIter {
+            if (sort_keys) {
+                var keys = std.ArrayList([]const u8).init(allocator);
+                try keys.ensureTotalCapacity(map.count());
+                var iter = map.iterator();
+                while (iter.next()) |entry| {
+                    try keys.append(entry.key_ptr.*);
                 }
-            }.lessThan);
+                std.mem.sortUnstable([]const u8, keys.items, {}, struct {
+                    fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                        return std.mem.lessThan(u8, a, b);
+                    }
+                }.lessThan);
+                return .{ .mode = .{ .sorted = try keys.toOwnedSlice() }, .map = map, .index = 0, .allocator = allocator };
+            }
+            return .{ .mode = .{ .unsorted = map.iterator() }, .map = map, .index = 0, .allocator = allocator };
         }
-        return keys.toOwnedSlice();
-    }
+
+        fn deinit(self: *MapIter) void {
+            if (self.mode == .sorted) self.allocator.free(self.mode.sorted);
+        }
+
+        fn next(self: *MapIter) ?Entry {
+            const is_first = self.index == 0;
+            switch (self.mode) {
+                .sorted => |keys| {
+                    if (self.index >= keys.len) return null;
+                    const key = keys[self.index];
+                    self.index += 1;
+                    return .{ .key = key, .value = self.map.get(key).?, .is_first = is_first };
+                },
+                .unsorted => |*iter| {
+                    if (iter.next()) |entry| {
+                        self.index += 1;
+                        return .{ .key = entry.key_ptr.*, .value = entry.value_ptr.*, .is_first = is_first };
+                    }
+                    return null;
+                },
+            }
+        }
+    };
 
     fn emitSeqChild(self: *Emitter, item: Value) EmitError!void {
         switch (item) {
@@ -178,9 +219,7 @@ pub const Emitter = struct {
 
     fn emitMapEntryValue(self: *Emitter, val: Value, empty_key: bool) EmitError!void {
         if (isScalar(val)) {
-            if (empty_key) {
-                try self.writeNewlineIndent();
-            }
+            if (empty_key) try self.writeNewlineIndent();
             try self.writer.writeAll(": ");
             try self.emitValue(val);
             return;
@@ -194,31 +233,23 @@ pub const Emitter = struct {
             return;
         }
         try self.writer.writeAll(":");
+        if (val == .sequence and self.indent_level == 0) try self.writer.writeByte('\n');
         const saved = self.indent_level;
-        switch (val) {
-            .sequence => {
-                // Top-level sequence as map value needs a newline before the first '-'
-                if (self.indent_level == 0) try self.writer.writeByte('\n');
-                try self.emitValue(val);
-            },
-            else => {
-                self.indent_level = saved + self.options.indent;
-                try self.emitValue(val);
-                self.indent_level = saved;
-            },
-        }
+        if (val != .sequence) self.indent_level = saved + self.options.indent;
+        try self.emitValue(val);
+        self.indent_level = saved;
     }
 
     fn emitMappingInline(self: *Emitter, map: Value.Mapping, base_indent: usize) EmitError!void {
         const saved = self.indent_level;
-        const keys = try self.collectKeys(map);
-        defer self.allocator.free(keys);
-        for (keys, 0..) |key, i| {
-            if (i > 0) {
+        var mi = try MapIter.init(self.allocator, map, self.options.sort_keys);
+        defer mi.deinit();
+        while (mi.next()) |entry| {
+            if (!entry.is_first) {
                 self.indent_level = base_indent;
                 try self.writeNewlineIndent();
             }
-            try self.emitMapEntry(key, map.get(key).?);
+            try self.emitMapEntry(entry.key, entry.value);
         }
         self.indent_level = saved;
     }
@@ -232,25 +263,25 @@ pub const Emitter = struct {
             try self.emitMappingFlow(map);
             return;
         }
-        const keys = try self.collectKeys(map);
-        defer self.allocator.free(keys);
-        for (keys, 0..) |key, i| {
-            if (i > 0 or self.indent_level > 0) {
+        var mi = try MapIter.init(self.allocator, map, self.options.sort_keys);
+        defer mi.deinit();
+        while (mi.next()) |entry| {
+            if (!entry.is_first or self.indent_level > 0) {
                 try self.writeNewlineIndent();
             }
-            try self.emitMapEntry(key, map.get(key).?);
+            try self.emitMapEntry(entry.key, entry.value);
         }
     }
 
     fn emitMappingFlow(self: *Emitter, map: Value.Mapping) EmitError!void {
         try self.writer.writeByte('{');
-        const keys = try self.collectKeys(map);
-        defer self.allocator.free(keys);
-        for (keys, 0..) |key, i| {
-            if (i > 0) try self.writer.writeAll(", ");
-            try self.emitString(key);
+        var mi = try MapIter.init(self.allocator, map, self.options.sort_keys);
+        defer mi.deinit();
+        while (mi.next()) |entry| {
+            if (!entry.is_first) try self.writer.writeAll(", ");
+            try self.emitString(entry.key);
             try self.writer.writeAll(": ");
-            try self.emitValue(map.get(key).?);
+            try self.emitValue(entry.value);
         }
         try self.writer.writeByte('}');
     }
@@ -260,14 +291,22 @@ pub const Emitter = struct {
     }
 
     fn writeNewlineIndent(self: *Emitter) EmitError!void {
-        try self.writer.writeByte('\n');
-        try self.writeIndent();
+        const indent = self.indent_level;
+        if (indent == 0) {
+            try self.writer.writeByte('\n');
+            return;
+        }
+        var buf: [256]u8 = undefined;
+        buf[0] = '\n';
+        @memset(buf[1..][0..indent], ' ');
+        try self.writer.writeAll(buf[0 .. indent + 1]);
     }
 };
 
 pub fn stringify(allocator: std.mem.Allocator, value: Value, options: EmitOptions) ![]const u8 {
     var buffer = std.ArrayList(u8).init(allocator);
     errdefer buffer.deinit();
+    try buffer.ensureTotalCapacity(256);
     var emitter = Emitter.init(allocator, buffer.writer(), options);
     try emitter.emitValue(value);
     return buffer.toOwnedSlice();
