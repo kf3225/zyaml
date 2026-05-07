@@ -24,9 +24,8 @@ pub const Scanner = struct {
     }
 
     pub fn peekAt(self: Scanner, offset: usize) ?u8 {
-        // Wrapping add so overflow is detectable via idx < self.pos below
-        const idx = self.pos +% offset;
-        if (idx < self.pos or idx >= self.source.len) return null;
+        const idx = std.math.add(usize, self.pos, offset) catch return null;
+        if (idx >= self.source.len) return null;
         return self.source[idx];
     }
 
@@ -52,7 +51,7 @@ pub const Scanner = struct {
         return self.pos >= self.source.len;
     }
 
-    pub fn startWith(self: *Scanner, comptime prefix: []const u8) bool {
+    pub fn startWith(self: Scanner, comptime prefix: []const u8) bool {
         if (self.pos + prefix.len > self.source.len) return false;
         inline for (prefix, 0..) |ch, i| {
             if (self.source[self.pos + i] != ch) return false;
@@ -62,7 +61,45 @@ pub const Scanner = struct {
 
     pub fn skipBytes(self: *Scanner, count: usize) void {
         const end = @min(self.pos + count, self.source.len);
-        for (self.source[self.pos..end]) |ch| {
+        const slice = self.source[self.pos..end];
+        if (std.mem.indexOfScalar(u8, slice, '\n')) |_| {
+            for (slice) |ch| {
+                self.pos += 1;
+                if (ch == '\n') {
+                    self.line += 1;
+                    self.column = 1;
+                    self.line_start = self.pos;
+                } else {
+                    self.column += 1;
+                }
+            }
+        } else {
+            self.pos = end;
+            self.column += slice.len;
+        }
+    }
+
+    pub fn skipKnownSpaces(self: *Scanner, count: usize) void {
+        const actual = @min(count, self.source.len - self.pos);
+        self.pos += actual;
+        self.column += actual;
+    }
+
+    pub fn skipWhitespace(self: *Scanner) void {
+        const remaining = self.source[self.pos..];
+        var i: usize = 0;
+        while (i < remaining.len) : (i += 1) {
+            const ch = remaining[i];
+            if (ch != ' ' and ch != '\t') break;
+        }
+        self.column += i;
+        self.pos += i;
+    }
+
+    pub fn skipWhitespaceAndNewlines(self: *Scanner) void {
+        while (self.pos < self.source.len) {
+            const ch = self.source[self.pos];
+            if (ch != ' ' and ch != '\t' and ch != '\n') break;
             self.pos += 1;
             if (ch == '\n') {
                 self.line += 1;
@@ -74,27 +111,18 @@ pub const Scanner = struct {
         }
     }
 
-    pub fn skipWhitespace(self: *Scanner) void {
-        while (self.peek()) |ch| {
-            if (ch != ' ' and ch != '\t') break;
-            self.skip();
-        }
-    }
-
-    pub fn skipWhitespaceAndNewlines(self: *Scanner) void {
-        while (self.peek()) |ch| {
-            if (ch != ' ' and ch != '\t' and ch != '\n') break;
-            self.skip();
-        }
-    }
-
     pub fn skipLine(self: *Scanner) void {
-        while (self.peek()) |ch| {
-            if (ch == '\n') {
-                self.skip();
-                break;
-            }
-            self.skip();
+        const remaining = self.source[self.pos..];
+        if (std.mem.indexOfScalar(u8, remaining, '\n')) |nl_pos| {
+            self.column += nl_pos;
+            self.pos += nl_pos + 1;
+            self.line += 1;
+            self.column = 1;
+            self.line_start = self.pos;
+        } else {
+            const skipped = remaining.len;
+            self.column += skipped;
+            self.pos = self.source.len;
         }
     }
 
@@ -103,13 +131,11 @@ pub const Scanner = struct {
     }
 
     fn countSpacesFrom(self: Scanner, start: usize) usize {
-        var count: usize = 0;
         var pos = start;
         while (pos < self.source.len) : (pos += 1) {
             if (self.source[pos] != ' ') break;
-            count += 1;
         }
-        return count;
+        return pos - start;
     }
 
     pub fn countLeadingSpaces(self: Scanner) usize {
