@@ -20,6 +20,7 @@ pub const Parser = struct {
     anchors: std.StringHashMap(Value),
     depth: usize,
     alias_clone_count: usize,
+    flow_depth: usize,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         return .{
@@ -28,6 +29,7 @@ pub const Parser = struct {
             .anchors = std.StringHashMap(Value).init(allocator),
             .depth = 0,
             .alias_clone_count = 0,
+            .flow_depth = 0,
         };
     }
 
@@ -399,7 +401,7 @@ pub const Parser = struct {
         var first_line = true;
         while (!self.scanner.isEof()) {
             const ch = self.scanner.peek() orelse break;
-            if (ch == ',' or ch == ']' or ch == '}') break;
+            if (self.flow_depth > 0 and (ch == ',' or ch == ']' or ch == '}')) break;
             if (ch == '\n') {
                 const saved_pos = self.scanner.pos;
                 self.scanner.skip();
@@ -756,6 +758,8 @@ pub const Parser = struct {
     fn parseFlowSequence(self: *Parser) YamlError!Value {
         std.debug.assert(self.scanner.peek() == '[');
         self.scanner.skip();
+        self.flow_depth += 1;
+        errdefer self.flow_depth -= 1;
 
         var seq = Value.Sequence.init(self.allocator);
         errdefer {
@@ -768,12 +772,16 @@ pub const Parser = struct {
 
             if (self.scanner.peek() == ']') {
                 self.scanner.skip();
+                self.flow_depth -= 1;
                 return .{ .sequence = seq };
             }
 
             if (self.scanner.peek() == ',') {
                 if (seq.items.len == 0) return YamlError.UnexpectedToken;
-                if (self.skipTrailingComma(']')) return .{ .sequence = seq };
+                if (self.skipTrailingComma(']')) {
+                    self.flow_depth -= 1;
+                    return .{ .sequence = seq };
+                }
                 continue;
             }
 
@@ -781,7 +789,10 @@ pub const Parser = struct {
             try seq.append(val);
 
             self.skipFlowWhitespaceAndComments();
-            if (self.skipTrailingComma(']')) return .{ .sequence = seq };
+            if (self.skipTrailingComma(']')) {
+                self.flow_depth -= 1;
+                return .{ .sequence = seq };
+            }
         }
 
         return YamlError.UnclosedFlowSequence;
@@ -790,6 +801,8 @@ pub const Parser = struct {
     fn parseFlowMapping(self: *Parser) YamlError!Value {
         std.debug.assert(self.scanner.peek() == '{');
         self.scanner.skip();
+        self.flow_depth += 1;
+        errdefer self.flow_depth -= 1;
 
         var map = Value.Mapping.init(self.allocator);
         errdefer self.deinitMappingEntries(&map);
@@ -801,12 +814,16 @@ pub const Parser = struct {
 
             if (self.scanner.peek() == '}') {
                 self.scanner.skip();
+                self.flow_depth -= 1;
                 return .{ .mapping = map };
             }
 
             if (self.scanner.peek() == ',') {
                 if (map.count() == 0) return YamlError.UnexpectedToken;
-                if (self.skipTrailingComma('}')) return .{ .mapping = map };
+                if (self.skipTrailingComma('}')) {
+                    self.flow_depth -= 1;
+                    return .{ .mapping = map };
+                }
                 continue;
             }
 
@@ -832,7 +849,10 @@ pub const Parser = struct {
             try map.put(key_str, value);
 
             self.skipFlowWhitespaceAndComments();
-            if (self.skipTrailingComma('}')) return .{ .mapping = map };
+            if (self.skipTrailingComma('}')) {
+                self.flow_depth -= 1;
+                return .{ .mapping = map };
+            }
         }
 
         return YamlError.UnclosedFlowMapping;
@@ -1252,6 +1272,15 @@ pub const Parser = struct {
         }
 
         self.scanner.skipWhitespace();
+        if (self.scanner.peek() == '#') {
+            self.scanner.skipLine();
+            self.skipNewlines();
+            const next_indent = self.scanner.countIndentAtLineStart();
+            if (next_indent > indent) {
+                self.scanner.skipKnownSpaces(next_indent);
+                return self.parseValueWithContext(next_indent, false);
+            }
+        }
 
         if (is_str_tag) {
             return self.parseAsString(indent);
