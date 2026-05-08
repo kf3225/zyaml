@@ -1094,7 +1094,7 @@ pub const Parser = struct {
     fn parseEntryValueAfterColon(self: *Parser, indent: usize) YamlError!Value {
         if (self.hasInlineValue()) {
             if (self.isNextAnchorOnOwnLine()) {
-                return self.parseAnchoredValue(indent);
+                return self.parseAnchoredValue(indent + 1);
             }
             return self.parseValueWithContext(indent + 2, true);
         }
