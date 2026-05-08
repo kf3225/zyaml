@@ -54,8 +54,13 @@ pub const Parser = struct {
         const first_value = try self.parseValue(0);
         self.skipCommentsAndBlankLines();
 
-        if (!self.scanner.startWith("---")) return first_value;
-        return self.parseMultiDocument(first_value);
+        if (self.scanner.isEof() or self.scanner.startWith("---") or self.scanner.startWith("...")) {
+            if (self.scanner.startWith("---")) return self.parseMultiDocument(first_value);
+            return first_value;
+        }
+        var first = first_value;
+        first.deinit(self.allocator);
+        return YamlError.UnexpectedToken;
     }
 
     fn parseMultiDocument(self: *Parser, first_value: Value) YamlError!Value {
@@ -152,8 +157,32 @@ pub const Parser = struct {
         }
     }
 
+    fn skipBlankLinesAndComments(self: *Parser) void {
+        while (!self.scanner.isEof()) {
+            const indent = self.scanner.countIndentAtLineStart();
+            const pos = self.scanner.line_start + indent;
+            if (pos >= self.scanner.source.len) break;
+            const ch = self.scanner.source[pos];
+            if (ch == '\n') {
+                self.scanner.pos = pos + 1;
+                self.scanner.line += 1;
+                self.scanner.column = 1;
+                self.scanner.line_start = pos + 1;
+            } else if (ch == '#') {
+                self.scanner.pos = pos;
+                self.scanner.skipLine();
+            } else {
+                break;
+            }
+        }
+    }
+
     fn parseValue(self: *Parser, indent: usize) YamlError!Value {
         return self.parseValueWithContext(indent, false);
+    }
+
+    fn parseValueAsEntry(self: *Parser, indent: usize) YamlError!Value {
+        return self.parseValueWithContext(indent, true);
     }
 
     fn tryScalarAsMappingKey(self: *Parser, scalar: Value, indent: usize, in_mapping_value: bool) YamlError!?Value {
@@ -241,7 +270,7 @@ pub const Parser = struct {
         for ('a'..'z' + 1) |ch| table[ch] = true;
         for ('A'..'Z' + 1) |ch| table[ch] = true;
         for ('0'..'9' + 1) |ch| table[ch] = true;
-        for ("_-.?:|>&!=<%@` \t") |ch| table[ch] = true;
+        for ("_-.?:|>&!=<%@` \t/") |ch| table[ch] = true;
         break :blk table;
     };
 
@@ -751,6 +780,9 @@ pub const Parser = struct {
         while (!self.scanner.isEof()) {
             if (!first_item) {
                 self.skipNewlines();
+                self.skipBlankLinesAndComments();
+
+                if (self.scanner.isEof()) break;
 
                 const current_indent = self.scanner.countIndentAtLineStart();
                 if (current_indent < indent) break;
@@ -771,9 +803,24 @@ pub const Parser = struct {
 
             self.scanner.skipWhitespace();
 
-            if (self.scanner.peek() == '\n' or self.scanner.isEof()) {
+            if (self.scanner.peek() == '\n') {
+                self.scanner.skip();
+                self.skipNewlines();
+                const next_indent = self.scanner.countIndentAtLineStart();
+                if (next_indent > indent) {
+                    self.scanner.skipKnownSpaces(next_indent);
+                    const val = try self.parseValueWithContext(next_indent, false);
+                    try seq.append(val);
+                    first_item = false;
+                    continue;
+                }
                 try seq.append(.null);
-                if (self.scanner.peek() == '\n') self.scanner.skip();
+                first_item = false;
+                continue;
+            }
+
+            if (self.scanner.isEof()) {
+                try seq.append(.null);
                 first_item = false;
                 continue;
             }
@@ -936,7 +983,6 @@ pub const Parser = struct {
 
         const next_indent = self.scanner.countIndentAtLineStart();
         if (next_indent > indent) {
-            if (next_indent - indent == 1) return YamlError.InvalidIndentation;
             self.scanner.skipKnownSpaces(next_indent);
             return self.parseValueWithContext(next_indent, false);
         }
@@ -955,6 +1001,9 @@ pub const Parser = struct {
     fn parseNextMappingEntries(self: *Parser, map: *Value.Mapping, indent: usize) YamlError!void {
         while (!self.scanner.isEof()) {
             self.skipNewlines();
+            self.skipBlankLinesAndComments();
+
+            if (self.scanner.isEof()) break;
 
             const current_indent = self.scanner.countIndentAtLineStart();
             if (current_indent != indent) break;
@@ -962,6 +1011,22 @@ pub const Parser = struct {
             if (self.scanner.startWith("---") or self.scanner.startWith("...")) break;
 
             self.scanner.skipKnownSpaces(current_indent);
+
+            if (self.scanner.peek() == '?' and self.scanner.peekAt(1) == ' ') {
+                var sub = try self.parseBlockMapping(indent);
+                var iter = sub.mapping.iterator();
+                while (iter.next()) |entry| {
+                    const gop = try map.getOrPut(entry.key_ptr.*);
+                    if (gop.found_existing) {
+                        entry.value_ptr.*.deinit(self.allocator);
+                        self.allocator.free(entry.key_ptr.*);
+                        return YamlError.DuplicateKey;
+                    }
+                    gop.value_ptr.* = entry.value_ptr.*;
+                }
+                sub.mapping.deinit();
+                continue;
+            }
 
             if (!isPlainKey(self.scanner.peek() orelse 0)) break;
 
@@ -996,7 +1061,7 @@ pub const Parser = struct {
 
     fn parseNextEntryValue(self: *Parser, indent: usize) YamlError!Value {
         if (self.hasInlineValue()) {
-            return self.parseValue(indent + 2);
+            return self.parseValueAsEntry(indent + 2);
         }
 
         if (self.scanner.peek() == '\n') self.scanner.skip();
@@ -1044,7 +1109,16 @@ pub const Parser = struct {
 
         try self.anchors.put(anchor, .{ .sequence = Value.Sequence.init(self.allocator) });
 
-        const value = self.parseValue(indent) catch |err| {
+        const value = if (self.scanner.peek() == '\n') blk: {
+            self.scanner.skip();
+            self.skipNewlines();
+            const next_indent = self.scanner.countIndentAtLineStart();
+            if (next_indent >= indent) {
+                self.scanner.skipKnownSpaces(next_indent);
+                break :blk try self.parseValueWithContext(next_indent, false);
+            }
+            break :blk Value.null;
+        } else self.parseValue(indent) catch |err| {
             if (self.anchors.fetchRemove(anchor)) |removed| {
                 self.allocator.free(removed.key);
             } else {
