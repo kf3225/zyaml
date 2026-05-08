@@ -263,7 +263,7 @@ pub const Parser = struct {
             '{' => return self.tryAsMappingOrReturn(try self.parseFlowMapping(), indent, in_mapping_value),
             '"' => return self.tryAsMappingOrReturn(try self.parseDoubleQuotedScalar(), indent, in_mapping_value),
             '\'' => return self.tryAsMappingOrReturn(try self.parseSingleQuotedScalar(), indent, in_mapping_value),
-            '|', '>' => return self.parseBlockScalar(),
+            '|', '>' => return self.parseBlockScalar(indent),
             '-' => {
                 if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')
                     return self.parseBlockSequence(indent);
@@ -672,7 +672,7 @@ pub const Parser = struct {
         return self.scanner.source[start..self.scanner.pos];
     }
 
-    fn parseBlockScalar(self: *Parser) YamlError!Value {
+    fn parseBlockScalar(self: *Parser, parent_indent: usize) YamlError!Value {
         const indicator = self.scanner.peek().?;
         std.debug.assert(indicator == '|' or indicator == '>');
         self.scanner.skip();
@@ -705,7 +705,7 @@ pub const Parser = struct {
             }
 
             if (!indent_detected) {
-                if (line_indent == 0) break;
+                if (line_indent == 0 and parent_indent > 0) break;
                 if (max_blank_indent > 0 and max_blank_indent > line_indent) {
                     return YamlError.InvalidIndentation;
                 }
