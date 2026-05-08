@@ -278,9 +278,31 @@ pub const Parser = struct {
             '?' => {
                 if (self.scanner.peekAt(1) == ' ') return self.parseBlockMapping(indent);
             },
-            '&' => return self.parseAnchoredValue(indent),
+            '&' => {
+                const anchored = try self.parseAnchoredValue(indent);
+                if (anchored == .string or anchored == .null or anchored == .boolean or anchored == .integer or anchored == .float) {
+                    const map_result = self.tryScalarAsMappingKey(anchored, indent, in_mapping_value) catch |err| {
+                        var a = anchored;
+                        a.deinit(self.allocator);
+                        return err;
+                    };
+                    if (map_result) |map| return map;
+                }
+                return anchored;
+            },
             '*' => return self.parseAlias(),
-            '!' => return self.parseTaggedValue(indent),
+            '!' => {
+                const tagged = try self.parseTaggedValue(indent);
+                if (tagged == .string or tagged == .null or tagged == .boolean or tagged == .integer or tagged == .float) {
+                    const map_result = self.tryScalarAsMappingKey(tagged, indent, in_mapping_value) catch |err| {
+                        var t = tagged;
+                        t.deinit(self.allocator);
+                        return err;
+                    };
+                    if (map_result) |map| return map;
+                }
+                return tagged;
+            },
             '~' => {
                 self.scanner.skip();
                 return .null;
@@ -932,6 +954,8 @@ pub const Parser = struct {
 
         if (ch == '"') return self.parseDoubleQuotedScalar();
         if (ch == '\'') return self.parseSingleQuotedScalar();
+        if (ch == '[') return self.parseFlowSequence();
+        if (ch == '{') return self.parseFlowMapping();
 
         return self.parsePlainScalarFlowKey();
     }
@@ -1067,6 +1091,19 @@ pub const Parser = struct {
 
     fn parseEntryValueAfterColon(self: *Parser, indent: usize) YamlError!Value {
         if (self.hasInlineValue()) {
+            if (self.scanner.peek() == '&') {
+                const saved = self.scanner.pos;
+                self.scanner.skip();
+                while (self.scanner.peek()) |ch| {
+                    if (ch == ' ' or ch == '\n') break;
+                    self.scanner.skip();
+                }
+                const is_anchor_only_line = self.scanner.peek() == '\n' or self.scanner.isEof();
+                self.scanner.pos = saved;
+                if (is_anchor_only_line) {
+                    return self.parseAnchoredValue(indent);
+                }
+            }
             return self.parseValueWithContext(indent + 2, true);
         }
 
@@ -1212,6 +1249,7 @@ pub const Parser = struct {
         const value = if (self.scanner.peek() == '\n') blk: {
             self.scanner.skip();
             self.skipNewlines();
+            self.skipBlankLinesAndComments();
             const next_indent = self.scanner.countIndentAtLineStart();
             if (next_indent >= indent) {
                 self.scanner.skipKnownSpaces(next_indent);
