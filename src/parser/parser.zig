@@ -1167,6 +1167,43 @@ pub const Parser = struct {
                     try map.put(try self.allocator.dupe(u8, ""), colon_val);
                     continue;
                 }
+                if (peek_ch == '"' or peek_ch == '\'') {
+                    const saved = self.scanner.pos;
+                    var has_newline = false;
+                    self.scanner.skip();
+                    const closing: u8 = if (peek_ch == '"') '"' else '\'';
+                    while (self.scanner.peek()) |c| {
+                        if (c == closing) {
+                            self.scanner.skip();
+                            break;
+                        }
+                        if (c == '\n') {
+                            has_newline = true;
+                            break;
+                        }
+                        if (c == '\\' and peek_ch == '"' and self.scanner.peekAt(1) != null) {
+                            self.scanner.skip();
+                        }
+                        self.scanner.skip();
+                    }
+                    if (has_newline) {
+                        self.scanner.pos = saved;
+                        break;
+                    }
+                    self.scanner.pos = saved;
+                    const quoted_val = try self.parseValueWithContext(indent, false);
+                    const qkey = try self.keyToString(quoted_val);
+                    self.scanner.skipWhitespace();
+                    if (self.scanner.peek() != ':') {
+                        self.allocator.free(qkey);
+                        break;
+                    }
+                    self.scanner.skip();
+                    self.scanner.skipWhitespace();
+                    const qval = try self.parseEntryValueAfterColon(indent);
+                    try map.put(qkey, qval);
+                    continue;
+                }
                 if (peek_ch == '&' or peek_ch == '*') {
                     const saved = self.scanner.pos;
                     self.scanner.skip();
