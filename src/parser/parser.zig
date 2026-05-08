@@ -1191,8 +1191,13 @@ pub const Parser = struct {
                         break;
                     }
                     self.scanner.pos = saved;
-                    const quoted_val = try self.parseValueWithContext(indent, false);
-                    const qkey = try self.keyToString(quoted_val);
+                    const scalar = if (peek_ch == '"')
+                        try self.parseDoubleQuotedScalar()
+                    else
+                        try self.parseSingleQuotedScalar();
+                    const qkey = try self.keyToString(scalar);
+                    var qs = scalar;
+                    qs.deinit(self.allocator);
                     self.scanner.skipWhitespace();
                     if (self.scanner.peek() != ':') {
                         self.allocator.free(qkey);
