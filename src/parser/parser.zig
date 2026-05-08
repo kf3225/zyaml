@@ -42,9 +42,6 @@ pub const Parser = struct {
     }
 
     pub fn parse(self: *Parser) YamlError!Value {
-        if (self.scanner.hasTabAtLineStart()) {
-            return YamlError.TabIndentation;
-        }
         try self.skipDirectives();
         self.skipDocumentStart();
         self.skipCommentsAndBlankLines();
@@ -144,6 +141,12 @@ pub const Parser = struct {
         }
     }
 
+    fn skipInlineComment(self: *Parser) void {
+        if (self.scanner.peek() == '#') {
+            self.scanner.skipLine();
+        }
+    }
+
     fn skipCommentsAndBlankLines(self: *Parser) void {
         while (!self.scanner.isEof()) {
             self.scanner.skipWhitespace();
@@ -190,7 +193,7 @@ pub const Parser = struct {
         self.scanner.skipWhitespace();
         if (self.scanner.peek() != ':') return null;
         const next = self.scanner.peekAt(1);
-        if (next != ' ' and next != '\n' and next != null) return null;
+        if (next != ' ' and next != '\t' and next != '\n' and next != null) return null;
         return self.parseBlockMappingWithKey(scalar, indent) catch |err| switch (err) {
             error.InvalidIndentation,
             error.TabIndentation,
@@ -235,7 +238,7 @@ pub const Parser = struct {
             },
             '|', '>' => return self.parseBlockScalar(),
             '-' => {
-                if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n')
+                if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')
                     return self.parseBlockSequence(indent);
             },
             '?' => {
@@ -308,7 +311,7 @@ pub const Parser = struct {
             self.scanner.pos = saved_pos;
             return false;
         }
-        if (next_ch == ':' and (self.scanner.peekAt(next_indent + 1) == ' ' or self.scanner.peekAt(next_indent + 1) == '\n')) {
+        if (next_ch == ':' and (self.scanner.peekAt(next_indent + 1) == ' ' or self.scanner.peekAt(next_indent + 1) == '\t' or self.scanner.peekAt(next_indent + 1) == '\n')) {
             self.scanner.pos = saved_pos;
             return false;
         }
@@ -358,7 +361,7 @@ pub const Parser = struct {
             }
             if (ch == ':') {
                 const next = self.scanner.peekAt(1);
-                if (next == ' ' or next == '\n' or next == null) {
+                if (next == ' ' or next == '\t' or next == '\n' or next == null) {
                     if (!in_mapping_value) break;
                 }
             }
@@ -793,11 +796,11 @@ pub const Parser = struct {
             const ch = self.scanner.peek() orelse break;
             if (ch != '-') break;
             const next = self.scanner.peekAt(1);
-            if (next != null and next != ' ' and next != '\n') break;
+            if (next != null and next != ' ' and next != '\t' and next != '\n') break;
 
             self.scanner.skip();
 
-            if (next == ' ') {
+            if (next == ' ' or next == '\t') {
                 self.scanner.skip();
             }
 
@@ -979,8 +982,6 @@ pub const Parser = struct {
         if (self.scanner.peek() == '\n') self.scanner.skip();
         self.skipNewlines();
 
-        if (self.scanner.hasTabAtLineStart()) return YamlError.TabIndentation;
-
         const next_indent = self.scanner.countIndentAtLineStart();
         if (next_indent > indent) {
             self.scanner.skipKnownSpaces(next_indent);
@@ -990,7 +991,7 @@ pub const Parser = struct {
         if (next_indent == indent) {
             self.scanner.skipKnownSpaces(next_indent);
             const ch = self.scanner.peek() orelse 0;
-            if (ch == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n')) {
+            if (ch == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')) {
                 return self.parseBlockSequence(indent);
             }
             self.scanner.pos -= next_indent;
@@ -1001,6 +1002,7 @@ pub const Parser = struct {
     fn parseNextMappingEntries(self: *Parser, map: *Value.Mapping, indent: usize) YamlError!void {
         while (!self.scanner.isEof()) {
             self.skipNewlines();
+            self.skipInlineComment();
             self.skipBlankLinesAndComments();
 
             if (self.scanner.isEof()) break;
@@ -1075,7 +1077,7 @@ pub const Parser = struct {
         if (val_indent == indent) {
             self.scanner.skipKnownSpaces(val_indent);
             const ch = self.scanner.peek() orelse 0;
-            if (ch == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n')) {
+            if (ch == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')) {
                 return self.parseBlockSequence(indent);
             }
             self.scanner.pos -= val_indent;
