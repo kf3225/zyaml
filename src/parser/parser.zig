@@ -392,10 +392,14 @@ pub const Parser = struct {
             if (ch == '\n') {
                 const saved_pos = self.scanner.pos;
                 self.scanner.skip();
-                if (!self.isNewlineContinuable(saved_pos, indent)) break;
+                if (!self.isNewlineContinuable(saved_pos, indent)) {
+                    self.scanner.pos = saved_pos;
+                    break;
+                }
                 has_newline = true;
                 if (!first_line) try writer.writeByte(' ');
                 first_line = false;
+                self.scanner.skipWhitespace();
                 continue;
             }
             if (ch == ':') {
@@ -869,6 +873,7 @@ pub const Parser = struct {
 
         while (!self.scanner.isEof()) {
             if (!first_item) {
+                self.skipInlineComment();
                 self.skipNewlines();
                 self.skipBlankLinesAndComments();
 
@@ -895,6 +900,18 @@ pub const Parser = struct {
 
             if (self.scanner.peek() == '#') {
                 self.scanner.skipLine();
+                self.skipNewlines();
+                const next_indent = self.scanner.countIndentAtLineStart();
+                if (next_indent > indent) {
+                    self.scanner.skipKnownSpaces(next_indent);
+                    const val = try self.parseValueWithContext(next_indent, false);
+                    try seq.append(val);
+                    first_item = false;
+                    continue;
+                }
+                try seq.append(.null);
+                first_item = false;
+                continue;
             }
 
             if (self.scanner.peek() == '\n') {
