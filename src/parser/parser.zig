@@ -45,15 +45,21 @@ pub const Parser = struct {
         try self.skipDirectives();
         self.skipDocumentStart();
         self.skipCommentsAndBlankLines();
+        self.skipDocumentStart();
 
         if (self.scanner.isEof()) return .null;
+
+        if (self.isDocStart() or self.isDocEnd()) {
+            return self.parseMultiDocument(.null);
+        }
 
         const first_value = try self.parseValue(0);
         self.skipCommentsAndBlankLines();
 
-        if (self.scanner.isEof() or self.scanner.startWith("---") or self.scanner.startWith("...")) {
-            if (self.scanner.startWith("---")) return self.parseMultiDocument(first_value);
-            return first_value;
+        if (self.scanner.isEof()) return first_value;
+
+        if (self.isDocStart() or self.isDocEnd()) {
+            return self.parseMultiDocument(first_value);
         }
         var first = first_value;
         first.deinit(self.allocator);
@@ -68,13 +74,26 @@ pub const Parser = struct {
         }
         try seq.append(first_value);
 
-        while (self.scanner.startWith("---")) {
+        while (self.isDocStart() or self.isDocEnd()) {
+            if (self.isDocEnd()) {
+                self.scanner.skipBytes(3);
+                self.scanner.skipLine();
+                self.skipCommentsAndBlankLines();
+                try self.skipDirectives();
+                self.skipCommentsAndBlankLines();
+                if (!self.isDocStart()) break;
+            }
             self.skipDocumentSeparator();
             self.skipCommentsAndBlankLines();
 
             if (self.scanner.isEof()) {
                 try seq.append(.null);
                 break;
+            }
+
+            if (self.isDocStart() or self.isDocEnd()) {
+                try seq.append(.null);
+                continue;
             }
 
             try seq.append(try self.parseValue(0));
@@ -88,6 +107,18 @@ pub const Parser = struct {
         self.scanner.skipBytes(3);
         self.scanner.skipWhitespace();
         if (self.scanner.peek() == '\n') self.scanner.skip();
+    }
+
+    fn isDocStart(self: *Parser) bool {
+        if (!self.scanner.startWith("---")) return false;
+        const after = self.scanner.peekAt(3);
+        return after == null or after == ' ' or after == '\t' or after == '\n' or after == '\r';
+    }
+
+    fn isDocEnd(self: *Parser) bool {
+        if (!self.scanner.startWith("...")) return false;
+        const after = self.scanner.peekAt(3);
+        return after == null or after == ' ' or after == '\t' or after == '\n' or after == '\r';
     }
 
     fn skipDirectives(self: *Parser) YamlError!void {
@@ -133,10 +164,11 @@ pub const Parser = struct {
     fn skipDocumentStart(self: *Parser) void {
         self.scanner.skipWhitespaceAndNewlines();
         if (self.scanner.startWith("---")) {
-            self.scanner.skipBytes(3);
-            self.scanner.skipWhitespace();
-            if (self.scanner.peek() == '\n') {
-                self.scanner.skip();
+            const after = self.scanner.peekAt(3);
+            if (after == null or after == ' ' or after == '\t' or after == '\n' or after == '\r') {
+                self.scanner.skipBytes(3);
+                self.scanner.skipWhitespace();
+                if (self.scanner.peek() == '\n') self.scanner.skip();
             }
         }
     }
@@ -299,7 +331,29 @@ pub const Parser = struct {
 
     fn isNewlineContinuable(self: *Parser, saved_pos: usize, indent: usize) bool {
         const next_indent = self.scanner.countLeadingSpaces();
-        if (next_indent <= 0) {
+        if (next_indent < indent) {
+            self.scanner.pos = saved_pos;
+            return false;
+        }
+        if (next_indent == 0 and indent == 0) {
+            const next_ch = self.scanner.peek() orelse {
+                self.scanner.pos = saved_pos;
+                return false;
+            };
+            if (next_ch == '-' and self.scanner.startWith("---") and
+                (self.scanner.peekAt(3) == null or self.scanner.peekAt(3) == ' ' or self.scanner.peekAt(3) == '\t' or self.scanner.peekAt(3) == '\n' or self.scanner.peekAt(3) == '\r'))
+            {
+                self.scanner.pos = saved_pos;
+                return false;
+            }
+            if (next_ch == '.' and self.scanner.startWith("...") and
+                (self.scanner.peekAt(3) == null or self.scanner.peekAt(3) == ' ' or self.scanner.peekAt(3) == '\t' or self.scanner.peekAt(3) == '\n' or self.scanner.peekAt(3) == '\r'))
+            {
+                self.scanner.pos = saved_pos;
+                return false;
+            }
+        }
+        if (next_indent == 0 and indent > 0) {
             self.scanner.pos = saved_pos;
             return false;
         }
@@ -315,15 +369,11 @@ pub const Parser = struct {
             self.scanner.pos = saved_pos;
             return false;
         }
-        if (next_indent < indent and next_ch == '-' and self.scanner.peekAt(next_indent + 1) == ' ') {
+        if (next_ch == '-' and self.scanner.peekAt(next_indent + 1) == ' ') {
             self.scanner.pos = saved_pos;
             return false;
         }
-        if (next_indent < indent and next_ch == '?' and self.scanner.peekAt(next_indent + 1) == ' ') {
-            self.scanner.pos = saved_pos;
-            return false;
-        }
-        if (next_indent < indent) {
+        if (next_ch == '?' and self.scanner.peekAt(next_indent + 1) == ' ') {
             self.scanner.pos = saved_pos;
             return false;
         }
@@ -442,9 +492,18 @@ pub const Parser = struct {
             }
 
             if (ch == '\n') {
+                while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
+                    _ = result.pop();
+                }
                 self.scanner.skip();
                 self.scanner.skipWhitespace();
-                try result.append(' ');
+                if (self.scanner.peek() == '\n') {
+                    try result.append('\n');
+                    continue;
+                }
+                if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
+                    try result.append(' ');
+                }
                 continue;
             }
 
@@ -550,9 +609,18 @@ pub const Parser = struct {
             }
 
             if (ch == '\n') {
+                while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
+                    _ = result.pop();
+                }
                 self.scanner.skip();
                 self.scanner.skipWhitespace();
-                try result.append(' ');
+                if (self.scanner.peek() == '\n') {
+                    try result.append('\n');
+                    continue;
+                }
+                if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
+                    try result.append(' ');
+                }
                 continue;
             }
 
@@ -597,7 +665,7 @@ pub const Parser = struct {
             if (line_indent > content_indent) {
                 try result.appendNTimes('\n', trailing + 1);
             } else {
-                try result.append('\n');
+                try result.appendNTimes('\n', trailing);
             }
         } else if (line_indent > content_indent) {
             try result.append('\n');
@@ -642,7 +710,9 @@ pub const Parser = struct {
 
         while (!self.scanner.isEof()) {
             const line_indent = self.scanner.countLeadingSpaces();
+            self.scanner.skipKnownSpaces(line_indent);
 
+            if (self.scanner.isEof()) break;
             if (self.scanner.peek() == '\n') {
                 trailing_newlines += 1;
                 self.scanner.skip();
@@ -651,7 +721,6 @@ pub const Parser = struct {
             }
 
             if (line_indent < content_indent and !first_content) break;
-            if (!first_content) self.scanner.skipKnownSpaces(line_indent);
             if (self.scanner.peek() == null) break;
 
             if (indicator == '>') {
@@ -890,7 +959,8 @@ pub const Parser = struct {
     }
 
     fn hasInlineValue(self: *Parser) bool {
-        return self.scanner.peek() != '\n' and !self.scanner.isEof();
+        const ch = self.scanner.peek() orelse return false;
+        return ch != '\n' and ch != '#';
     }
 
     fn skipFlowWhitespaceAndComments(self: *Parser) void {
@@ -947,6 +1017,7 @@ pub const Parser = struct {
 
         errdefer self.allocator.free(key_str);
         try map.put(key_str, value);
+        try self.parseNextMappingEntries(&map, indent);
         return .{ .mapping = map };
     }
 
@@ -979,8 +1050,11 @@ pub const Parser = struct {
             return self.parseValueWithContext(indent + 2, true);
         }
 
-        if (self.scanner.peek() == '\n') self.scanner.skip();
+        if (self.scanner.peek() == '#') {
+            self.scanner.skipLine();
+        }
         self.skipNewlines();
+        self.skipBlankLinesAndComments();
 
         const next_indent = self.scanner.countIndentAtLineStart();
         if (next_indent > indent) {
@@ -1066,8 +1140,12 @@ pub const Parser = struct {
             return self.parseValueAsEntry(indent + 2);
         }
 
+        if (self.scanner.peek() == '#') {
+            self.scanner.skipLine();
+        }
         if (self.scanner.peek() == '\n') self.scanner.skip();
         self.skipNewlines();
+        self.skipBlankLinesAndComments();
 
         const val_indent = self.scanner.countIndentAtLineStart();
         if (val_indent > indent) {
