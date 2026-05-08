@@ -941,7 +941,8 @@ pub const Parser = struct {
     }
 
     fn parsePlainScalarFlowKey(self: *Parser) YamlError!Value {
-        const start_pos = self.scanner.pos;
+        var result = std.ArrayList(u8).init(self.allocator);
+        errdefer result.deinit();
 
         while (!self.scanner.isEof()) {
             const ch = self.scanner.peek() orelse break;
@@ -954,18 +955,22 @@ pub const Parser = struct {
                 self.scanner.skipWhitespace();
                 const next = self.scanner.peek() orelse break;
                 if (next == ',' or next == ']' or next == '}' or next == ':' or next == '#') break;
+                try result.append(' ');
                 continue;
             }
 
+            try result.append(ch);
             self.scanner.skip();
         }
 
-        const raw = self.scanner.source[start_pos..self.scanner.pos];
-        const trimmed = std.mem.trimRight(u8, raw, " \t");
+        const trimmed = std.mem.trimRight(u8, result.items, " \t");
         const resolved = Value.resolveScalar(trimmed);
         if (resolved == .string) {
-            return .{ .string = try self.allocator.dupe(u8, trimmed) };
+            const duped = try self.allocator.dupe(u8, trimmed);
+            result.deinit();
+            return .{ .string = duped };
         }
+        result.deinit();
         return resolved;
     }
 
