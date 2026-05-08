@@ -1249,6 +1249,14 @@ pub const Parser = struct {
                 break;
             }
 
+            if (self.scanner.peek() == ':' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n' or self.scanner.peekAt(1) == null)) {
+                self.scanner.skip();
+                self.scanner.skipWhitespace();
+                const colon_val = try self.parseEntryValueAfterColon(indent);
+                try map.put(try self.allocator.dupe(u8, ""), colon_val);
+                continue;
+            }
+
             const next_key_val = try self.parsePlainScalar(indent, false);
             const next_key_str = try self.keyToString(next_key_val);
             var nkv = next_key_val;
