@@ -270,7 +270,8 @@ pub const Parser = struct {
             '\'' => return self.tryAsMappingOrReturn(try self.parseSingleQuotedScalar(), indent, in_mapping_value),
             '|', '>' => return self.parseBlockScalar(indent),
             '-' => {
-                if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')
+                const next = self.scanner.peekAt(1);
+                if (next == null or next == ' ' or next == '\t' or next == '\n')
                     return self.parseBlockSequence(indent);
             },
             '?' => {
@@ -707,11 +708,31 @@ pub const Parser = struct {
                 self.scanner.skipKnownSpaces(line_indent);
             }
 
-            if (self.scanner.isEof()) break;
+            if (self.scanner.isEof()) {
+                if (indent_detected and line_indent >= content_indent) {
+                    if (line_indent > content_indent) {
+                        if (!first_content) try result.appendNTimes('\n', trailing_newlines + 1);
+                        try result.appendNTimes(' ', line_indent - content_indent);
+                        first_content = false;
+                    }
+                    trailing_newlines += 1;
+                } else if (!indent_detected and line_indent > 0) {
+                    trailing_newlines += 1;
+                }
+                break;
+            }
             if (self.scanner.peek() == '\n') {
-                trailing_newlines += 1;
-                if (!indent_detected and line_indent > max_blank_indent) {
-                    max_blank_indent = line_indent;
+                if (!indent_detected) {
+                    trailing_newlines += 1;
+                    if (line_indent > max_blank_indent) max_blank_indent = line_indent;
+                } else if (line_indent > content_indent) {
+                    if (!first_content) try result.appendNTimes('\n', trailing_newlines + 1);
+                    trailing_newlines = 0;
+                    const extra = line_indent - content_indent;
+                    try result.appendNTimes(' ', extra);
+                    first_content = false;
+                } else {
+                    trailing_newlines += 1;
                 }
                 self.scanner.skip();
                 continue;
@@ -724,6 +745,10 @@ pub const Parser = struct {
                 }
                 content_indent = @max(line_indent, max_blank_indent);
                 indent_detected = true;
+                if (trailing_newlines > 0) {
+                    try result.appendNTimes('\n', trailing_newlines);
+                    trailing_newlines = 0;
+                }
             } else if (line_indent < content_indent) {
                 break;
             }
@@ -962,6 +987,15 @@ pub const Parser = struct {
         if (ch == '\'') return self.parseSingleQuotedScalar();
         if (ch == '[') return self.parseFlowSequence();
         if (ch == '{') return self.parseFlowMapping();
+        if (ch == '!') {
+            const saved = self.scanner.pos;
+            const tagged = try self.parseTaggedValue(0);
+            self.scanner.skipWhitespace();
+            if (self.scanner.peek() == ':') return tagged;
+            var tv = tagged;
+            tv.deinit(self.allocator);
+            self.scanner.pos = saved;
+        }
 
         return self.parsePlainScalarFlowKey();
     }
@@ -1280,6 +1314,23 @@ pub const Parser = struct {
                 break;
             }
 
+            if (self.scanner.peek() == '!') {
+                const tagged_val = try self.parseTaggedValue(indent);
+                var tv = tagged_val;
+                const tkey = try self.keyToString(tv);
+                tv.deinit(self.allocator);
+                self.scanner.skipWhitespace();
+                if (self.scanner.peek() != ':') {
+                    self.allocator.free(tkey);
+                    break;
+                }
+                self.scanner.skip();
+                self.scanner.skipWhitespace();
+                const tval = try self.parseNextEntryValue(indent);
+                try map.put(tkey, tval);
+                continue;
+            }
+
             if (self.scanner.peek() == ':' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n' or self.scanner.peekAt(1) == null)) {
                 self.scanner.skip();
                 self.scanner.skipWhitespace();
@@ -1444,8 +1495,14 @@ pub const Parser = struct {
             }
         }
 
+        if (self.scanner.peek() == '<') {
+            while (self.scanner.peek()) |ch| {
+                self.scanner.skip();
+                if (ch == '>') break;
+            }
+        }
         while (self.scanner.peek()) |ch| {
-            if (ch == ' ' or ch == '\n') break;
+            if (ch == ' ' or ch == '\n' or ch == ',' or ch == '}' or ch == ']') break;
             self.scanner.skip();
         }
 
