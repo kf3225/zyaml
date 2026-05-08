@@ -1477,7 +1477,7 @@ pub const Parser = struct {
     }
 
     fn parseAsString(self: *Parser, indent: usize) YamlError!Value {
-        const ch = self.scanner.peek() orelse return .null;
+        const ch = self.scanner.peek() orelse return .{ .string = try self.allocator.dupe(u8, "") };
 
         if (ch == '"') {
             return self.parseDoubleQuotedScalar();
