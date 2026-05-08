@@ -800,8 +800,12 @@ pub const Parser = struct {
 
             if (self.scanner.peek() == ',') {
                 if (seq.items.len == 0) return YamlError.UnexpectedToken;
-                if (self.skipTrailingComma(']')) {
+                self.scanner.skip();
+                self.skipFlowWhitespaceAndComments();
+                if (self.scanner.peek() == ',') return YamlError.UnexpectedToken;
+                if (self.scanner.peek() == ']') {
                     self.flow_depth -= 1;
+                    self.scanner.skip();
                     return .{ .sequence = seq };
                 }
                 continue;
