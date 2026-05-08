@@ -701,7 +701,11 @@ pub const Parser = struct {
 
         while (!self.scanner.isEof()) {
             const line_indent = self.scanner.countLeadingSpaces();
-            self.scanner.skipKnownSpaces(line_indent);
+            if (indent_detected and indicator == '>' and line_indent > content_indent) {
+                self.scanner.skipKnownSpaces(content_indent);
+            } else {
+                self.scanner.skipKnownSpaces(line_indent);
+            }
 
             if (self.scanner.isEof()) break;
             if (self.scanner.peek() == '\n') {
