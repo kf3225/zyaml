@@ -473,9 +473,11 @@ pub const Parser = struct {
         return resolved;
     }
 
-    fn foldQuotedNewline(self: *Parser, result: *std.ArrayList(u8)) YamlError!void {
-        while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
-            _ = result.pop();
+    fn foldQuotedNewline(self: *Parser, result: *std.ArrayList(u8), strip_trailing: bool) YamlError!void {
+        if (strip_trailing) {
+            while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
+                _ = result.pop();
+            }
         }
         self.scanner.skip();
         self.scanner.skipWhitespace();
@@ -513,7 +515,24 @@ pub const Parser = struct {
             }
 
             if (ch == '\n') {
-                try self.foldQuotedNewline(&result);
+                const nl_pos = self.scanner.pos;
+                var src_ws: usize = 0;
+                while (src_ws < nl_pos) {
+                    const prev = self.scanner.source[nl_pos - 1 - src_ws];
+                    if (prev == ' ' or prev == '\t') src_ws += 1 else break;
+                }
+                if (src_ws > 0 and nl_pos > src_ws) {
+                    const before_ws = self.scanner.source[nl_pos - 1 - src_ws];
+                    if (before_ws == '\\') src_ws -|= 1;
+                }
+                while (src_ws > 0 and result.items.len > 0) {
+                    const last = result.items[result.items.len - 1];
+                    if (last == ' ' or last == '\t') {
+                        _ = result.pop();
+                        src_ws -= 1;
+                    } else break;
+                }
+                try self.foldQuotedNewline(&result, false);
                 continue;
             }
 
@@ -619,7 +638,7 @@ pub const Parser = struct {
             }
 
             if (ch == '\n') {
-                try self.foldQuotedNewline(&result);
+                try self.foldQuotedNewline(&result, true);
                 continue;
             }
 
@@ -1328,6 +1347,23 @@ pub const Parser = struct {
                 self.scanner.skipWhitespace();
                 const tval = try self.parseNextEntryValue(indent);
                 try map.put(tkey, tval);
+                continue;
+            }
+
+            if (self.scanner.peek() == '*') {
+                const alias_key = try self.parseAlias();
+                const alkey = try self.keyToString(alias_key);
+                var alk = alias_key;
+                alk.deinit(self.allocator);
+                self.scanner.skipWhitespace();
+                if (self.scanner.peek() != ':') {
+                    self.allocator.free(alkey);
+                    break;
+                }
+                self.scanner.skip();
+                self.scanner.skipWhitespace();
+                const alval = try self.parseNextEntryValue(indent);
+                try map.put(alkey, alval);
                 continue;
             }
 
