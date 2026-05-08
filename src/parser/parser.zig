@@ -60,8 +60,13 @@ pub const Parser = struct {
 
         if (self.scanner.isEof()) return first_value;
 
-        if (self.isDocStart() or self.isDocEnd()) {
+        if (self.isDocStart()) {
             return self.parseMultiDocument(first_value);
+        }
+        if (self.isDocEnd()) {
+            self.scanner.skipBytes(3);
+            self.scanner.skipLine();
+            return first_value;
         }
         var first = first_value;
         first.deinit(self.allocator);
