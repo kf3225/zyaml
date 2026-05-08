@@ -259,8 +259,8 @@ pub const Parser = struct {
         const ch = self.scanner.peek() orelse return .null;
 
         switch (ch) {
-            '[' => return self.parseFlowSequence(),
-            '{' => return self.parseFlowMapping(),
+            '[' => return self.tryAsMappingOrReturn(try self.parseFlowSequence(), indent, in_mapping_value),
+            '{' => return self.tryAsMappingOrReturn(try self.parseFlowMapping(), indent, in_mapping_value),
             '"' => return self.tryAsMappingOrReturn(try self.parseDoubleQuotedScalar(), indent, in_mapping_value),
             '\'' => return self.tryAsMappingOrReturn(try self.parseSingleQuotedScalar(), indent, in_mapping_value),
             '|', '>' => return self.parseBlockScalar(),
@@ -269,7 +269,8 @@ pub const Parser = struct {
                     return self.parseBlockSequence(indent);
             },
             '?' => {
-                if (self.scanner.peekAt(1) == ' ') return self.parseBlockMapping(indent);
+                if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n')
+                    return self.parseBlockMapping(indent);
             },
             '&' => return self.tryAsMappingOrReturn(try self.parseAnchoredValue(indent), indent, in_mapping_value),
             '*' => return self.tryAsMappingOrReturn(try self.parseAlias(), indent, in_mapping_value),
@@ -470,6 +471,8 @@ pub const Parser = struct {
         self.scanner.skipWhitespace();
         if (self.scanner.peek() == '\n') {
             try result.append('\n');
+            self.scanner.skip();
+            self.scanner.skipWhitespace();
             return;
         }
         if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
@@ -937,15 +940,24 @@ pub const Parser = struct {
             const ch = self.scanner.peek() orelse break;
 
             if (ch == ',' or ch == ']' or ch == '}' or ch == ':') break;
-            if (ch == '#' or ch == '\n') break;
+            if (ch == '#') break;
+            if (ch == '\n') {
+                if (self.flow_depth == 0) break;
+                self.scanner.skip();
+                self.scanner.skipWhitespace();
+                const next = self.scanner.peek() orelse break;
+                if (next == ',' or next == ']' or next == '}' or next == ':' or next == '#') break;
+                continue;
+            }
 
             self.scanner.skip();
         }
 
         const raw = self.scanner.source[start_pos..self.scanner.pos];
-        const resolved = Value.resolveScalar(raw);
+        const trimmed = std.mem.trimRight(u8, raw, " \t");
+        const resolved = Value.resolveScalar(trimmed);
         if (resolved == .string) {
-            return .{ .string = try self.allocator.dupe(u8, raw) };
+            return .{ .string = try self.allocator.dupe(u8, trimmed) };
         }
         return resolved;
     }
@@ -1141,6 +1153,13 @@ pub const Parser = struct {
 
             if (!isPlainKey(self.scanner.peek() orelse 0)) {
                 const peek_ch = self.scanner.peek() orelse 0;
+                if (peek_ch == ':' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n' or self.scanner.peekAt(1) == null)) {
+                    self.scanner.skip();
+                    self.scanner.skipWhitespace();
+                    const colon_val = try self.parseEntryValueAfterColon(indent);
+                    try map.put(try self.allocator.dupe(u8, ""), colon_val);
+                    continue;
+                }
                 if (peek_ch == '&' or peek_ch == '*') {
                     const saved = self.scanner.pos;
                     self.scanner.skip();
@@ -1241,9 +1260,10 @@ pub const Parser = struct {
     fn readAnchorName(self: *Parser) YamlError![]const u8 {
         const start = self.scanner.pos;
         while (self.scanner.peek()) |ch| {
-            if (std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_') {
-                self.scanner.skip();
-            } else break;
+            if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or
+                ch == ',' or ch == '[' or ch == ']' or ch == '{' or ch == '}')
+                break;
+            self.scanner.skip();
         }
         return self.allocator.dupe(u8, self.scanner.source[start..self.scanner.pos]);
     }
