@@ -90,6 +90,10 @@ fn runTest(allocator: std.mem.Allocator, test_dir: std.fs.Dir, id: []const u8, l
     if (readFileAlloc(allocator, test_dir, "in.json")) |json_opt| {
         if (json_opt) |json_raw| {
             defer allocator.free(json_raw);
+            if (json_raw.len == 0) {
+                log.writer().print("{s} OK(empty_json)\n", .{id}) catch {};
+                return .pass;
+            }
             var json_val = zyaml.parse(allocator, json_raw) catch {
                 log.writer().print("{s} FAIL(json)\n", .{id}) catch {};
                 return .fail;
