@@ -1428,7 +1428,9 @@ pub const Parser = struct {
         self.scanner.skip();
 
         var is_str_tag = false;
-        if (self.scanner.peek() == '!') {
+        if (self.scanner.peek() == ' ') {
+            is_str_tag = true;
+        } else if (self.scanner.peek() == '!') {
             self.scanner.skip();
             if (self.scanner.peek() == 's') {
                 if (self.scanner.startWith("str") or self.scanner.startWith("str ")) {
