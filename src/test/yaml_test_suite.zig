@@ -130,7 +130,11 @@ test "yaml-test-suite" {
         defer sub_dir.close();
 
         if (fileExists(sub_dir, "in.yaml")) {
-            const r = try runTest(allocator, sub_dir, top_entry.name, log);
+            const r = runTest(allocator, sub_dir, top_entry.name, log) catch |err| {
+                log.writer().print("{s} CRASH({})\n", .{ top_entry.name, err }) catch {};
+                failed += 1;
+                continue;
+            };
             switch (r) {
                 .pass => passed += 1,
                 .fail => failed += 1,
@@ -149,7 +153,11 @@ test "yaml-test-suite" {
             const id = std.fmt.allocPrint(allocator, "{s}/{s}", .{ top_entry.name, sub_entry.name }) catch continue;
             defer allocator.free(id);
 
-            const r = try runTest(allocator, test_dir, id, log);
+            const r = runTest(allocator, test_dir, id, log) catch |err| {
+                log.writer().print("{s} CRASH({})\n", .{ id, err }) catch {};
+                failed += 1;
+                continue;
+            };
             switch (r) {
                 .pass => passed += 1,
                 .fail => failed += 1,
