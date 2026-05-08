@@ -684,18 +684,11 @@ pub const Parser = struct {
 
         if (self.scanner.isEof()) return .{ .string = try result.toOwnedSlice() };
 
-        const first_line_indent = self.scanner.countLeadingSpaces();
-        const content_indent = header.explicit_indent orelse first_line_indent;
-
-        if (content_indent == 0) return .{ .string = try result.toOwnedSlice() };
-        if (header.explicit_indent) |expected| {
-            if (first_line_indent < expected) return YamlError.InvalidIndentation;
-        }
-
-        self.scanner.skipKnownSpaces(content_indent);
-
+        var content_indent: usize = header.explicit_indent orelse 0;
+        var indent_detected = header.explicit_indent != null;
         var trailing_newlines: usize = 0;
         var first_content = true;
+        var max_blank_indent: usize = 0;
 
         while (!self.scanner.isEof()) {
             const line_indent = self.scanner.countLeadingSpaces();
@@ -704,13 +697,27 @@ pub const Parser = struct {
             if (self.scanner.isEof()) break;
             if (self.scanner.peek() == '\n') {
                 trailing_newlines += 1;
+                if (!indent_detected and line_indent > max_blank_indent) {
+                    max_blank_indent = line_indent;
+                }
                 self.scanner.skip();
-                first_content = false;
                 continue;
             }
 
-            if (line_indent < content_indent and !first_content) break;
-            if (self.scanner.peek() == null) break;
+            if (!indent_detected) {
+                if (line_indent == 0) break;
+                if (max_blank_indent > 0 and max_blank_indent > line_indent) {
+                    return YamlError.InvalidIndentation;
+                }
+                content_indent = @max(line_indent, max_blank_indent);
+                indent_detected = true;
+            } else if (line_indent < content_indent) {
+                break;
+            }
+
+            if (header.explicit_indent) |expected| {
+                if (line_indent < expected) return YamlError.InvalidIndentation;
+            }
 
             if (indicator == '>') {
                 try appendFoldedSeparator(&result, trailing_newlines, line_indent, content_indent, first_content);
