@@ -111,16 +111,18 @@ pub const Parser = struct {
         if (self.scanner.peek() == '\n') self.scanner.skip();
     }
 
+    fn isDocBoundaryTerminator(ch: ?u8) bool {
+        return ch == null or ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
+    }
+
     fn isDocStart(self: *Parser) bool {
         if (!self.scanner.startWith("---")) return false;
-        const after = self.scanner.peekAt(3);
-        return after == null or after == ' ' or after == '\t' or after == '\n' or after == '\r';
+        return isDocBoundaryTerminator(self.scanner.peekAt(3));
     }
 
     fn isDocEnd(self: *Parser) bool {
         if (!self.scanner.startWith("...")) return false;
-        const after = self.scanner.peekAt(3);
-        return after == null or after == ' ' or after == '\t' or after == '\n' or after == '\r';
+        return isDocBoundaryTerminator(self.scanner.peekAt(3));
     }
 
     fn skipDirectives(self: *Parser) YamlError!void {
@@ -166,8 +168,7 @@ pub const Parser = struct {
     fn skipDocumentStart(self: *Parser) void {
         self.scanner.skipWhitespaceAndNewlines();
         if (self.scanner.startWith("---")) {
-            const after = self.scanner.peekAt(3);
-            if (after == null or after == ' ' or after == '\t' or after == '\n' or after == '\r') {
+            if (isDocBoundaryTerminator(self.scanner.peekAt(3))) {
                 self.scanner.skipBytes(3);
                 self.scanner.skipWhitespace();
                 if (self.scanner.peek() == '\n') self.scanner.skip();
@@ -238,6 +239,16 @@ pub const Parser = struct {
         };
     }
 
+    fn tryAsMappingOrReturn(self: *Parser, value: Value, indent: usize, in_mapping_value: bool) YamlError!Value {
+        const map = self.tryScalarAsMappingKey(value, indent, in_mapping_value) catch |err| {
+            var v = value;
+            v.deinit(self.allocator);
+            return err;
+        };
+        if (map) |m| return m;
+        return value;
+    }
+
     fn parseValueWithContext(self: *Parser, indent: usize, in_mapping_value: bool) YamlError!Value {
         if (self.depth >= MAX_DEPTH) return YamlError.InvalidDocument;
         self.depth += 1;
@@ -250,26 +261,8 @@ pub const Parser = struct {
         switch (ch) {
             '[' => return self.parseFlowSequence(),
             '{' => return self.parseFlowMapping(),
-            '"' => {
-                const str = try self.parseDoubleQuotedScalar();
-                const map_result = self.tryScalarAsMappingKey(str, indent, in_mapping_value) catch |err| {
-                    var s = str;
-                    s.deinit(self.allocator);
-                    return err;
-                };
-                if (map_result) |map| return map;
-                return str;
-            },
-            '\'' => {
-                const str = try self.parseSingleQuotedScalar();
-                const map_result = self.tryScalarAsMappingKey(str, indent, in_mapping_value) catch |err| {
-                    var s = str;
-                    s.deinit(self.allocator);
-                    return err;
-                };
-                if (map_result) |map| return map;
-                return str;
-            },
+            '"' => return self.tryAsMappingOrReturn(try self.parseDoubleQuotedScalar(), indent, in_mapping_value),
+            '\'' => return self.tryAsMappingOrReturn(try self.parseSingleQuotedScalar(), indent, in_mapping_value),
             '|', '>' => return self.parseBlockScalar(),
             '-' => {
                 if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')
@@ -278,31 +271,9 @@ pub const Parser = struct {
             '?' => {
                 if (self.scanner.peekAt(1) == ' ') return self.parseBlockMapping(indent);
             },
-            '&' => {
-                const anchored = try self.parseAnchoredValue(indent);
-                if (anchored == .string or anchored == .null or anchored == .boolean or anchored == .integer or anchored == .float) {
-                    const map_result = self.tryScalarAsMappingKey(anchored, indent, in_mapping_value) catch |err| {
-                        var a = anchored;
-                        a.deinit(self.allocator);
-                        return err;
-                    };
-                    if (map_result) |map| return map;
-                }
-                return anchored;
-            },
+            '&' => return self.tryAsMappingOrReturn(try self.parseAnchoredValue(indent), indent, in_mapping_value),
             '*' => return self.parseAlias(),
-            '!' => {
-                const tagged = try self.parseTaggedValue(indent);
-                if (tagged == .string or tagged == .null or tagged == .boolean or tagged == .integer or tagged == .float) {
-                    const map_result = self.tryScalarAsMappingKey(tagged, indent, in_mapping_value) catch |err| {
-                        var t = tagged;
-                        t.deinit(self.allocator);
-                        return err;
-                    };
-                    if (map_result) |map| return map;
-                }
-                return tagged;
-            },
+            '!' => return self.tryAsMappingOrReturn(try self.parseTaggedValue(indent), indent, in_mapping_value),
             '~' => {
                 self.scanner.skip();
                 return .null;
@@ -311,14 +282,7 @@ pub const Parser = struct {
         }
 
         if (isPlainKey(ch)) {
-            const scalar = try self.parsePlainScalar(indent, in_mapping_value);
-            const map_result = self.tryScalarAsMappingKey(scalar, indent, in_mapping_value) catch |err| {
-                var s = scalar;
-                s.deinit(self.allocator);
-                return err;
-            };
-            if (map_result) |map| return map;
-            return scalar;
+            return self.tryAsMappingOrReturn(try self.parsePlainScalar(indent, in_mapping_value), indent, in_mapping_value);
         }
 
         return .null;
@@ -483,6 +447,21 @@ pub const Parser = struct {
         return .{ .string = duped };
     }
 
+    fn foldQuotedNewline(self: *Parser, result: *std.ArrayList(u8)) YamlError!void {
+        while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
+            _ = result.pop();
+        }
+        self.scanner.skip();
+        self.scanner.skipWhitespace();
+        if (self.scanner.peek() == '\n') {
+            try result.append('\n');
+            return;
+        }
+        if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
+            try result.append(' ');
+        }
+    }
+
     fn resolvePlainScalarSlice(self: *Parser, start_pos: usize) YamlError!Value {
         const raw = self.scanner.source[start_pos..self.scanner.pos];
         const trimmed = std.mem.trim(u8, raw, " \t");
@@ -516,18 +495,7 @@ pub const Parser = struct {
             }
 
             if (ch == '\n') {
-                while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
-                    _ = result.pop();
-                }
-                self.scanner.skip();
-                self.scanner.skipWhitespace();
-                if (self.scanner.peek() == '\n') {
-                    try result.append('\n');
-                    continue;
-                }
-                if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
-                    try result.append(' ');
-                }
+                try self.foldQuotedNewline(&result);
                 continue;
             }
 
@@ -633,18 +601,7 @@ pub const Parser = struct {
             }
 
             if (ch == '\n') {
-                while (result.items.len > 0 and (result.items[result.items.len - 1] == ' ' or result.items[result.items.len - 1] == '\t')) {
-                    _ = result.pop();
-                }
-                self.scanner.skip();
-                self.scanner.skipWhitespace();
-                if (self.scanner.peek() == '\n') {
-                    try result.append('\n');
-                    continue;
-                }
-                if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
-                    try result.append(' ');
-                }
+                try self.foldQuotedNewline(&result);
                 continue;
             }
 
@@ -1093,20 +1050,23 @@ pub const Parser = struct {
         return .{ .mapping = map };
     }
 
+    fn isNextAnchorOnOwnLine(self: *Parser) bool {
+        if (self.scanner.peek() != '&') return false;
+        const saved = self.scanner.pos;
+        self.scanner.skip();
+        while (self.scanner.peek()) |ch| {
+            if (ch == ' ' or ch == '\n') break;
+            self.scanner.skip();
+        }
+        const result = self.scanner.peek() == '\n' or self.scanner.isEof();
+        self.scanner.pos = saved;
+        return result;
+    }
+
     fn parseEntryValueAfterColon(self: *Parser, indent: usize) YamlError!Value {
         if (self.hasInlineValue()) {
-            if (self.scanner.peek() == '&') {
-                const saved = self.scanner.pos;
-                self.scanner.skip();
-                while (self.scanner.peek()) |ch| {
-                    if (ch == ' ' or ch == '\n') break;
-                    self.scanner.skip();
-                }
-                const is_anchor_only_line = self.scanner.peek() == '\n' or self.scanner.isEof();
-                self.scanner.pos = saved;
-                if (is_anchor_only_line) {
-                    return self.parseAnchoredValue(indent);
-                }
+            if (self.isNextAnchorOnOwnLine()) {
+                return self.parseAnchoredValue(indent);
             }
             return self.parseValueWithContext(indent + 2, true);
         }
@@ -1134,6 +1094,21 @@ pub const Parser = struct {
         return .null;
     }
 
+    fn mergeSubMapping(self: *Parser, map: *Value.Mapping, sub: Value) YamlError!void {
+        var owned = sub;
+        var iter = owned.mapping.iterator();
+        while (iter.next()) |entry| {
+            const gop = try map.getOrPut(entry.key_ptr.*);
+            if (gop.found_existing) {
+                entry.value_ptr.*.deinit(self.allocator);
+                self.allocator.free(entry.key_ptr.*);
+                return YamlError.DuplicateKey;
+            }
+            gop.value_ptr.* = entry.value_ptr.*;
+        }
+        owned.mapping.deinit();
+    }
+
     fn parseNextMappingEntries(self: *Parser, map: *Value.Mapping, indent: usize) YamlError!void {
         while (!self.scanner.isEof()) {
             self.skipNewlines();
@@ -1150,18 +1125,8 @@ pub const Parser = struct {
             self.scanner.skipKnownSpaces(current_indent);
 
             if (self.scanner.peek() == '?' and self.scanner.peekAt(1) == ' ') {
-                var sub = try self.parseBlockMapping(indent);
-                var iter = sub.mapping.iterator();
-                while (iter.next()) |entry| {
-                    const gop = try map.getOrPut(entry.key_ptr.*);
-                    if (gop.found_existing) {
-                        entry.value_ptr.*.deinit(self.allocator);
-                        self.allocator.free(entry.key_ptr.*);
-                        return YamlError.DuplicateKey;
-                    }
-                    gop.value_ptr.* = entry.value_ptr.*;
-                }
-                sub.mapping.deinit();
+                const sub = try self.parseBlockMapping(indent);
+                try self.mergeSubMapping(map, sub);
                 continue;
             }
 
@@ -1239,6 +1204,8 @@ pub const Parser = struct {
         self.scanner.skip();
 
         const anchor = try self.readAnchorName();
+        var anchor_in_map = false;
+        errdefer if (!anchor_in_map) self.allocator.free(anchor);
 
         self.scanner.skipWhitespace();
 
@@ -1249,6 +1216,7 @@ pub const Parser = struct {
         }
 
         try self.anchors.put(anchor, .{ .sequence = Value.Sequence.init(self.allocator) });
+        anchor_in_map = true;
 
         const value = if (self.scanner.peek() == '\n') blk: {
             self.scanner.skip();
