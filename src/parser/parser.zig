@@ -675,7 +675,9 @@ pub const Parser = struct {
                 const code = try self.readHexEscape(u21, 8);
                 try appendCodepoint(result, code);
             },
-            '\n' => {},
+            '\n' => {
+                self.scanner.skipWhitespace();
+            },
             else => return YamlError.InvalidEscapeSequence,
         }
     }
