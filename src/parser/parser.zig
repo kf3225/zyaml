@@ -705,12 +705,14 @@ pub const Parser = struct {
         explicit_indent: ?usize,
     };
 
-    fn parseBlockScalarHeader(self: *Parser) BlockScalarHeader {
+    fn parseBlockScalarHeader(self: *Parser) YamlError!BlockScalarHeader {
         var header: BlockScalarHeader = .{ .chomp = .clip, .explicit_indent = null };
+        var has_space = false;
         while (self.scanner.peek()) |ch| {
             if (ch == '+' or ch == '-') {
                 header.chomp = if (ch == '+') .keep else .strip;
                 self.scanner.skip();
+                has_space = false;
             } else if (ch >= '0' and ch <= '9') {
                 header.explicit_indent = 0;
                 while (self.scanner.peek()) |d| {
@@ -719,12 +721,19 @@ pub const Parser = struct {
                         self.scanner.skip();
                     } else break;
                 }
+                has_space = false;
             } else if (ch == ' ' or ch == '\t') {
                 self.scanner.skip();
+                has_space = true;
             } else break;
         }
-        if (self.scanner.peek() == '#') self.scanner.skipLine();
-        if (self.scanner.peek() == '\n') self.scanner.skip();
+        if (self.scanner.peek() == '#' and has_space) {
+            self.scanner.skipLine();
+        } else if (self.scanner.peek() == '\n') {
+            self.scanner.skip();
+        } else if (self.scanner.peek() != null) {
+            return YamlError.UnexpectedToken;
+        }
         return header;
     }
 
@@ -757,7 +766,7 @@ pub const Parser = struct {
         std.debug.assert(indicator == '|' or indicator == '>');
         self.scanner.skip();
 
-        const header = self.parseBlockScalarHeader();
+        const header = try self.parseBlockScalarHeader();
 
         var result = std.ArrayList(u8).init(self.allocator);
         errdefer result.deinit();
