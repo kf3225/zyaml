@@ -440,9 +440,30 @@ pub const Parser = struct {
                     break;
                 }
                 has_newline = true;
-                if (!first_line) try writer.writeByte(' ');
                 first_line = false;
                 self.scanner.skipWhitespace();
+                if (self.scanner.peek() == '\n') {
+                    try writer.writeByte('\n');
+                    const inner_saved = self.scanner.pos;
+                    self.scanner.skip();
+                    if (!self.isNewlineContinuable(inner_saved, indent)) {
+                        self.scanner.pos = inner_saved;
+                        break;
+                    }
+                    self.scanner.skipWhitespace();
+                    while (self.scanner.peek() == '\n') {
+                        try writer.writeByte('\n');
+                        const blank_saved = self.scanner.pos;
+                        self.scanner.skip();
+                        if (!self.isNewlineContinuable(blank_saved, indent)) {
+                            self.scanner.pos = blank_saved;
+                            break;
+                        }
+                        self.scanner.skipWhitespace();
+                    }
+                } else {
+                    try writer.writeByte(' ');
+                }
                 continue;
             }
             if (ch == ':') {
