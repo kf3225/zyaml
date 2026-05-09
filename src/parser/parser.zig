@@ -214,6 +214,18 @@ pub const Parser = struct {
             } else if (ch == '#') {
                 self.scanner.pos = pos;
                 self.scanner.skipLine();
+            } else if (ch == '\t') {
+                var check = pos;
+                while (check < self.scanner.source.len and self.scanner.source[check] != '\n') {
+                    if (self.scanner.source[check] != ' ' and self.scanner.source[check] != '\t') break;
+                    check += 1;
+                }
+                if (check < self.scanner.source.len and self.scanner.source[check] == '\n') {
+                    self.scanner.pos = pos;
+                    self.scanner.skipLine();
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
