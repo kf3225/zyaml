@@ -326,7 +326,7 @@ pub const Parser = struct {
         }
 
         if (isPlainKey(ch)) {
-            return self.tryAsMappingOrReturn(try self.parsePlainScalar(indent, in_mapping_value), indent, in_mapping_value);
+            return self.tryAsMappingOrReturn(try self.parsePlainScalar(indent), indent, in_mapping_value);
         }
 
         return .null;
@@ -426,7 +426,7 @@ pub const Parser = struct {
         }
     };
 
-    fn scanPlainScalar(self: *Parser, writer: ScalarWriter, indent: usize, in_mapping_value: bool) YamlError!bool {
+    fn scanPlainScalar(self: *Parser, writer: ScalarWriter, indent: usize) YamlError!bool {
         var has_newline = false;
         var first_line = true;
         while (!self.scanner.isEof()) {
@@ -447,9 +447,7 @@ pub const Parser = struct {
             }
             if (ch == ':') {
                 const next = self.scanner.peekAt(1);
-                if (next == ' ' or next == '\t' or next == '\n' or next == null) {
-                    if (!in_mapping_value) break;
-                }
+                if (next == ' ' or next == '\t' or next == '\n' or next == null) break;
             }
             if (ch == ' ' or ch == '\t') {
                 const ws_start = self.scanner.pos;
@@ -473,15 +471,15 @@ pub const Parser = struct {
         return has_newline;
     }
 
-    fn parsePlainScalar(self: *Parser, indent: usize, in_mapping_value: bool) YamlError!Value {
+    fn parsePlainScalar(self: *Parser, indent: usize) YamlError!Value {
         const start_pos = self.scanner.pos;
-        const has_newline = try self.scanPlainScalar(.counter, indent, in_mapping_value);
+        const has_newline = try self.scanPlainScalar(.counter, indent);
         if (!has_newline) return self.resolvePlainScalarSlice(start_pos);
 
         self.scanner.pos = start_pos;
         var result = std.ArrayList(u8).init(self.allocator);
         errdefer result.deinit();
-        _ = try self.scanPlainScalar(.{ .builder = &result }, indent, in_mapping_value);
+        _ = try self.scanPlainScalar(.{ .builder = &result }, indent);
 
         const raw = try result.toOwnedSlice();
         const trimmed = std.mem.trim(u8, raw, " \t");
@@ -535,8 +533,24 @@ pub const Parser = struct {
             if (ch != ',' and ch != ']' and ch != '}' and ch != ':' and ch != ' ' and ch != '\t' and ch != '\n' and ch != '\r')
                 return YamlError.UnexpectedToken;
         } else {
-            if (ch != ':' and ch != ' ' and ch != '\t' and ch != '\n' and ch != '\r')
+            if (ch == ':') {
+                const next = self.scanner.peekAt(1);
+                if (next == ' ' or next == '\t' or next == '\n' or next == '\r' or next == null) return;
+            }
+            if (ch == ' ' or ch == '\t') {
+                const saved = self.scanner.pos;
+                self.scanner.skipWhitespace();
+                const after = self.scanner.peek();
+                self.scanner.pos = saved;
+                if (after == '#' or after == '\n' or after == '\r' or after == null) return;
+                if (after == ':') {
+                    const next2 = self.scanner.peekAt(self.scanner.pos - saved + 2);
+                    if (next2 == ' ' or next2 == '\t' or next2 == '\n' or next2 == '\r' or next2 == null) return;
+                }
                 return YamlError.UnexpectedToken;
+            }
+            if (ch == '\n' or ch == '\r') return;
+            return YamlError.UnexpectedToken;
         }
     }
 
@@ -714,13 +728,11 @@ pub const Parser = struct {
                 self.scanner.skip();
                 has_space = false;
             } else if (ch >= '0' and ch <= '9') {
-                header.explicit_indent = 0;
-                while (self.scanner.peek()) |d| {
-                    if (d >= '0' and d <= '9') {
-                        header.explicit_indent.? = header.explicit_indent.? * 10 + @as(usize, d - '0');
-                        self.scanner.skip();
-                    } else break;
-                }
+                const digit: usize = @intCast(ch - '0');
+                if (digit == 0) return YamlError.InvalidIndentation;
+                self.scanner.skip();
+                if (header.explicit_indent != null) return YamlError.UnexpectedToken;
+                header.explicit_indent = digit;
                 has_space = false;
             } else if (ch == ' ' or ch == '\t') {
                 self.scanner.skip();
@@ -871,9 +883,13 @@ pub const Parser = struct {
     fn ensureValidAfterFlowClose(self: *Parser) YamlError!void {
         if (self.flow_depth > 1) return;
         const ch = self.scanner.peek() orelse return;
-        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == '#' or
+        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or
             ch == ',' or ch == ']' or ch == '}' or ch == ':' or ch == '%')
             return;
+        if (ch == '#' and self.scanner.pos > 0) {
+            const prev = self.scanner.source[self.scanner.pos - 1];
+            if (prev == ' ' or prev == '\t') return;
+        }
         return YamlError.UnexpectedToken;
     }
 
@@ -1040,6 +1056,24 @@ pub const Parser = struct {
 
             if (next == ' ' or next == '\t') {
                 self.scanner.skip();
+            }
+
+            var saw_tab = next == '\t';
+            while (self.scanner.peek()) |c| {
+                if (c == ' ') {
+                    self.scanner.skip();
+                } else if (c == '\t') {
+                    saw_tab = true;
+                    self.scanner.skip();
+                } else break;
+            }
+            if (saw_tab) {
+                const p = self.scanner.peek() orelse 0;
+                if (p == '-' or p == '?' or p == ':' or p == '|' or p == '>') {
+                    const p2 = self.scanner.peekAt(1);
+                    if (p2 == ' ' or p2 == '\t' or p2 == '\n' or p2 == null)
+                        return YamlError.TabIndentation;
+                }
             }
 
             self.scanner.skipWhitespace();
@@ -1469,7 +1503,7 @@ pub const Parser = struct {
                 continue;
             }
 
-            const next_key_val = try self.parsePlainScalar(indent, false);
+            const next_key_val = try self.parsePlainScalar(indent);
             const next_key_str = try self.keyToString(next_key_val);
             var nkv = next_key_val;
             nkv.deinit(self.allocator);
