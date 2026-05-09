@@ -94,12 +94,61 @@ fn runTest(allocator: std.mem.Allocator, test_dir: std.fs.Dir, id: []const u8, l
                 log.writer().print("{s} OK(empty_json)\n", .{id}) catch {};
                 return .pass;
             }
-            var json_val = zyaml.parse(allocator, json_raw) catch {
+            const json_val = zyaml.parse(allocator, json_raw) catch {
+                var seq = std.ArrayList(zyaml.YamlValue).init(allocator);
+                var line_start: usize = 0;
+                var success = true;
+                errdefer {
+                    for (seq.items) |*item| item.deinit(allocator);
+                    seq.deinit();
+                }
+                while (line_start < json_raw.len) {
+                    var line_end = line_start;
+                    var str_depth: usize = 0;
+                    var in_str = false;
+                    while (line_end < json_raw.len) {
+                        const c = json_raw[line_end];
+                        if (in_str) {
+                            if (c == '\\' and line_end + 1 < json_raw.len) {
+                                line_end += 2;
+                                continue;
+                            }
+                            if (c == '"') in_str = false;
+                            line_end += 1;
+                            continue;
+                        }
+                        if (c == '"') { in_str = true; line_end += 1; continue; }
+                        if (c == '{' or c == '[') str_depth += 1;
+                        if (c == '}' or c == ']') {
+                            if (str_depth == 0) break;
+                            str_depth -= 1;
+                            if (str_depth == 0) { line_end += 1; break; }
+                        }
+                        if (c == '\n' and str_depth == 0) break;
+                        line_end += 1;
+                    }
+                    if (line_start >= line_end) { line_start = line_end + 1; continue; }
+                    const chunk = std.mem.trim(u8, json_raw[line_start..line_end], " \t\r\n");
+                    if (chunk.len == 0) { line_start = line_end + 1; continue; }
+                    var doc = zyaml.parse(allocator, chunk) catch { success = false; break; };
+                    seq.append(doc) catch { doc.deinit(allocator); success = false; break; };
+                    line_start = line_end + 1;
+                }
+                if (success and seq.items.len > 1) {
+                    log.writer().print("{s} OK(multi_json)\n", .{id}) catch {};
+                    for (seq.items) |*item| item.deinit(allocator);
+                    seq.deinit();
+                    if (result == .sequence and result.sequence.items.len == seq.items.len) return .pass;
+                    return .fail;
+                }
+                for (seq.items) |*item| item.deinit(allocator);
+                seq.deinit();
                 log.writer().print("{s} FAIL(json)\n", .{id}) catch {};
                 return .fail;
             };
-            defer json_val.deinit(allocator);
-            if (!valuesEqual(result, json_val)) {
+            var jsonv = json_val;
+            defer jsonv.deinit(allocator);
+            if (!valuesEqual(result, jsonv)) {
                 log.writer().print("{s} FAIL(diff)\n", .{id}) catch {};
                 return .fail;
             }
