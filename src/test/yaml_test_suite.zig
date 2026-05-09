@@ -135,10 +135,13 @@ fn runTest(allocator: std.mem.Allocator, test_dir: std.fs.Dir, id: []const u8, l
                     line_start = line_end + 1;
                 }
                 if (success and seq.items.len > 1) {
-                    log.writer().print("{s} OK(multi_json)\n", .{id}) catch {};
-                    for (seq.items) |*item| item.deinit(allocator);
-                    seq.deinit();
-                    if (result == .sequence and result.sequence.items.len == seq.items.len) return .pass;
+                    const multi: zyaml.YamlValue = .{ .sequence = seq };
+                    defer {
+                        var m = multi;
+                        m.deinit(allocator);
+                    }
+                    if (valuesEqual(result, multi)) return .pass;
+                    log.writer().print("{s} FAIL(diff)\n", .{id}) catch {};
                     return .fail;
                 }
                 for (seq.items) |*item| item.deinit(allocator);
