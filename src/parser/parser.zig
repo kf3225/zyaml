@@ -889,6 +889,10 @@ pub const Parser = struct {
 
             self.skipFlowWhitespaceAndComments();
 
+            if (self.scanner.peek() == ',' or self.scanner.peek() == '}') {
+                try map.put(key_str, .null);
+                continue;
+            }
             if (self.scanner.peek() != ':') {
                 self.allocator.free(key_str);
                 return YamlError.UnexpectedToken;
