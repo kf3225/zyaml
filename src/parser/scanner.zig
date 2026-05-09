@@ -146,11 +146,18 @@ pub const Scanner = struct {
         return self.countSpacesFrom(self.lineStartOffset());
     }
 
-    pub fn hasTabAtLineStart(self: Scanner) bool {
+    pub fn hasTabAsLeadingIndent(self: Scanner) bool {
         var pos = self.lineStartOffset();
+        var saw_space = false;
         while (pos < self.source.len) : (pos += 1) {
-            if (self.source[pos] == '\t') return true;
-            if (self.source[pos] != ' ') break;
+            if (self.source[pos] == ' ') {
+                saw_space = true;
+            } else if (self.source[pos] == '\t') {
+                if (!saw_space) return true;
+                return false;
+            } else {
+                break;
+            }
         }
         return false;
     }

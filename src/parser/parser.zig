@@ -65,6 +65,13 @@ pub const Parser = struct {
         }
         if (self.isDocEnd()) {
             self.scanner.skipBytes(3);
+            self.scanner.skipWhitespace();
+            const after = self.scanner.peek();
+            if (after != null and after != '\n' and after != '#') {
+                var first = first_value;
+                first.deinit(self.allocator);
+                return YamlError.UnexpectedToken;
+            }
             self.scanner.skipLine();
             return first_value;
         }
@@ -84,6 +91,9 @@ pub const Parser = struct {
         while (self.isDocStart() or self.isDocEnd()) {
             if (self.isDocEnd()) {
                 self.scanner.skipBytes(3);
+                self.scanner.skipWhitespace();
+                const after = self.scanner.peek();
+                if (after != null and after != '\n' and after != '#') return YamlError.UnexpectedToken;
                 self.scanner.skipLine();
                 self.skipCommentsAndBlankLines();
                 try self.skipDirectives();
@@ -135,7 +145,9 @@ pub const Parser = struct {
             self.scanner.skipWhitespaceAndNewlines();
             if (self.scanner.peek() != '%') break;
             self.scanner.skip();
-            if (self.scanner.startWith("YAML")) {
+            if (self.scanner.startWith("YAML") and
+                (self.scanner.peekAt(4) == ' ' or self.scanner.peekAt(4) == '\t'))
+            {
                 try self.parseYamlVersionDirective();
             }
             self.scanner.skipLine();
@@ -144,12 +156,20 @@ pub const Parser = struct {
 
     fn parseYamlVersionDirective(self: *Parser) YamlError!void {
         self.scanner.skipBytes(4);
+        const ws_start = self.scanner.pos;
         self.scanner.skipWhitespace();
+        if (self.scanner.pos == ws_start) return YamlError.UnexpectedToken;
 
         const major = self.parseVersionNumber();
         self.skipVersionMinor();
 
         if (major > 1) return YamlError.UnsupportedVersion;
+
+        const ws2_start = self.scanner.pos;
+        self.scanner.skipWhitespace();
+        const ch = self.scanner.peek() orelse return;
+        if (ch == '#' and self.scanner.pos == ws2_start) return YamlError.UnexpectedToken;
+        if (ch != '#' and ch != '\n' and ch != '\r') return YamlError.UnexpectedToken;
     }
 
     fn parseVersionNumber(self: *Parser) usize {
@@ -198,6 +218,10 @@ pub const Parser = struct {
                 break;
             }
         }
+    }
+
+    fn checkTabIndent(self: *Parser) YamlError!void {
+        if (self.scanner.hasTabAsLeadingIndent()) return YamlError.TabIndentation;
     }
 
     fn skipBlankLinesAndComments(self: *Parser) void {
@@ -250,6 +274,7 @@ pub const Parser = struct {
             error.InvalidIndentation,
             error.TabIndentation,
             error.DuplicateKey,
+            error.UnexpectedToken,
             => err,
             error.OutOfMemory => error.OutOfMemory,
             else => null,
@@ -504,6 +529,17 @@ pub const Parser = struct {
         }
     }
 
+    fn ensureValidAfterScalar(self: *Parser) YamlError!void {
+        const ch = self.scanner.peek() orelse return;
+        if (self.flow_depth > 0) {
+            if (ch != ',' and ch != ']' and ch != '}' and ch != ':' and ch != ' ' and ch != '\t' and ch != '\n' and ch != '\r')
+                return YamlError.UnexpectedToken;
+        } else {
+            if (ch != ':' and ch != ' ' and ch != '\t' and ch != '\n' and ch != '\r')
+                return YamlError.UnexpectedToken;
+        }
+    }
+
     fn parseDoubleQuotedScalar(self: *Parser) YamlError!Value {
         std.debug.assert(self.scanner.peek() == '"');
         self.scanner.skip();
@@ -516,6 +552,7 @@ pub const Parser = struct {
 
             if (ch == '"') {
                 self.scanner.skip();
+                try self.ensureValidAfterScalar();
                 const str = try result.toOwnedSlice();
                 return .{ .string = str };
             }
@@ -577,6 +614,7 @@ pub const Parser = struct {
         table['a'] = 0x07;
         table['b'] = 0x08;
         table['t'] = '\t';
+        table['\t'] = '\t';
         table['n'] = '\n';
         table['v'] = 0x0B;
         table['f'] = 0x0C;
@@ -624,7 +662,7 @@ pub const Parser = struct {
                 try appendCodepoint(result, code);
             },
             '\n' => {},
-            else => try result.append(ch),
+            else => return YamlError.InvalidEscapeSequence,
         }
     }
 
@@ -645,6 +683,7 @@ pub const Parser = struct {
                     self.scanner.skip();
                     continue;
                 }
+                try self.ensureValidAfterScalar();
                 const str = try result.toOwnedSlice();
                 return .{ .string = str };
             }
@@ -820,6 +859,15 @@ pub const Parser = struct {
         return .{ .string = try result.toOwnedSlice() };
     }
 
+    fn ensureValidAfterFlowClose(self: *Parser) YamlError!void {
+        if (self.flow_depth > 1) return;
+        const ch = self.scanner.peek() orelse return;
+        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == '#' or
+            ch == ',' or ch == ']' or ch == '}' or ch == ':' or ch == '%')
+            return;
+        return YamlError.UnexpectedToken;
+    }
+
     fn parseFlowSequence(self: *Parser) YamlError!Value {
         std.debug.assert(self.scanner.peek() == '[');
         self.scanner.skip();
@@ -837,6 +885,7 @@ pub const Parser = struct {
 
             if (self.scanner.peek() == ']') {
                 self.scanner.skip();
+                try self.ensureValidAfterFlowClose();
                 self.flow_depth -= 1;
                 return .{ .sequence = seq };
             }
@@ -847,8 +896,9 @@ pub const Parser = struct {
                 self.skipFlowWhitespaceAndComments();
                 if (self.scanner.peek() == ',') return YamlError.UnexpectedToken;
                 if (self.scanner.peek() == ']') {
-                    self.flow_depth -= 1;
                     self.scanner.skip();
+                    try self.ensureValidAfterFlowClose();
+                    self.flow_depth -= 1;
                     return .{ .sequence = seq };
                 }
                 continue;
@@ -858,7 +908,20 @@ pub const Parser = struct {
             try seq.append(val);
 
             self.skipFlowWhitespaceAndComments();
-            if (self.skipTrailingComma(']')) {
+            if (self.scanner.peek() == ',') {
+                const saved = self.scanner.pos;
+                self.scanner.skip();
+                self.skipFlowWhitespaceAndComments();
+                if (self.scanner.peek() == ']') {
+                    self.scanner.skip();
+                    try self.ensureValidAfterFlowClose();
+                    self.flow_depth -= 1;
+                    return .{ .sequence = seq };
+                }
+                self.scanner.pos = saved;
+            } else if (self.scanner.peek() == ']') {
+                self.scanner.skip();
+                try self.ensureValidAfterFlowClose();
                 self.flow_depth -= 1;
                 return .{ .sequence = seq };
             }
@@ -883,6 +946,7 @@ pub const Parser = struct {
 
             if (self.scanner.peek() == '}') {
                 self.scanner.skip();
+                try self.ensureValidAfterFlowClose();
                 self.flow_depth -= 1;
                 return .{ .mapping = map };
             }
@@ -890,6 +954,7 @@ pub const Parser = struct {
             if (self.scanner.peek() == ',') {
                 if (map.count() == 0) return YamlError.UnexpectedToken;
                 if (self.skipTrailingComma('}')) {
+                    try self.ensureValidAfterFlowClose();
                     self.flow_depth -= 1;
                     return .{ .mapping = map };
                 }
@@ -953,6 +1018,7 @@ pub const Parser = struct {
                 const current_indent = self.scanner.countIndentAtLineStart();
                 if (current_indent < indent) break;
 
+                try self.checkTabIndent();
                 self.scanner.skipKnownSpaces(current_indent);
             }
 
@@ -1252,6 +1318,7 @@ pub const Parser = struct {
 
             if (self.scanner.startWith("---") or self.scanner.startWith("...")) break;
 
+            try self.checkTabIndent();
             self.scanner.skipKnownSpaces(current_indent);
 
             if (self.scanner.peek() == '?' and self.scanner.peekAt(1) == ' ') {
