@@ -435,7 +435,17 @@ pub const Parser = struct {
         }
     };
 
-    fn scanPlainScalar(self: *Parser, writer: ScalarWriter, indent: usize) YamlError!bool {
+    fn isLineBlank(self: *Parser) bool {
+        var pos = self.scanner.pos;
+        while (pos < self.scanner.source.len) : (pos += 1) {
+            const c = self.scanner.source[pos];
+            if (c == '\n') return true;
+            if (c != ' ' and c != '\t') return false;
+        }
+        return true;
+    }
+
+    fn scanPlainScalar(self: *Parser, writer: ScalarWriter, indent: usize, cont_indent: usize) YamlError!bool {
         var has_newline = false;
         var first_line = true;
         while (!self.scanner.isEof()) {
@@ -444,9 +454,17 @@ pub const Parser = struct {
             if (ch == '\n') {
                 const saved_pos = self.scanner.pos;
                 self.scanner.skip();
-                if (!self.isNewlineContinuable(saved_pos, indent)) {
+                const line_start_pos = self.scanner.pos;
+                if (!self.isNewlineContinuable(saved_pos, cont_indent)) {
                     self.scanner.pos = saved_pos;
                     break;
+                }
+                if (self.isLineBlank()) {
+                    self.scanner.pos = line_start_pos;
+                    if (!self.isNewlineContinuable(saved_pos, indent)) {
+                        self.scanner.pos = saved_pos;
+                        break;
+                    }
                 }
                 has_newline = true;
                 first_line = false;
@@ -502,14 +520,15 @@ pub const Parser = struct {
     }
 
     fn parsePlainScalar(self: *Parser, indent: usize) YamlError!Value {
+        const cont_indent: usize = if (indent > 0) indent - 1 else 0;
         const start_pos = self.scanner.pos;
-        const has_newline = try self.scanPlainScalar(.counter, indent);
+        const has_newline = try self.scanPlainScalar(.counter, indent, cont_indent);
         if (!has_newline) return self.resolvePlainScalarSlice(start_pos);
 
         self.scanner.pos = start_pos;
         var result = std.ArrayList(u8).init(self.allocator);
         errdefer result.deinit();
-        _ = try self.scanPlainScalar(.{ .builder = &result }, indent);
+        _ = try self.scanPlainScalar(.{ .builder = &result }, indent, cont_indent);
 
         const raw = try result.toOwnedSlice();
         const trimmed = std.mem.trim(u8, raw, " \t");
