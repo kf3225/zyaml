@@ -454,6 +454,26 @@ pub const Parser = struct {
             if (ch == '\n') {
                 const saved_pos = self.scanner.pos;
                 self.scanner.skip();
+                if (self.scanner.peek() == '\n') {
+                    if (self.scanner.countLeadingSpaces() < cont_indent) {
+                        self.scanner.pos = saved_pos;
+                        break;
+                    }
+                    has_newline = true;
+                    first_line = false;
+                    try writer.writeByte('\n');
+                    while (self.scanner.peek() == '\n') {
+                        const blank_saved = self.scanner.pos;
+                        self.scanner.skip();
+                        if (!self.isNewlineContinuable(blank_saved, indent)) {
+                            self.scanner.pos = blank_saved;
+                            break;
+                        }
+                        try writer.writeByte('\n');
+                    }
+                    self.scanner.skipWhitespace();
+                    continue;
+                }
                 const line_start_pos = self.scanner.pos;
                 if (!self.isNewlineContinuable(saved_pos, cont_indent)) {
                     self.scanner.pos = saved_pos;
