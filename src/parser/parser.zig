@@ -21,6 +21,8 @@ pub const Parser = struct {
     depth: usize,
     alias_clone_count: usize,
     flow_depth: usize,
+    has_yaml_directive: bool,
+    had_document: bool,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         return .{
@@ -30,6 +32,8 @@ pub const Parser = struct {
             .depth = 0,
             .alias_clone_count = 0,
             .flow_depth = 0,
+            .has_yaml_directive = false,
+            .had_document = false,
         };
     }
 
@@ -49,13 +53,18 @@ pub const Parser = struct {
         self.skipCommentsAndBlankLines();
         self.skipDocumentStart();
 
-        if (self.scanner.isEof()) return .null;
+        if (self.scanner.isEof()) {
+            if (self.has_yaml_directive and !self.had_document) return YamlError.UnexpectedToken;
+            return .null;
+        }
 
         if (self.isDocStart() or self.isDocEnd()) {
+            if (self.isDocEnd() and !self.isDocStart()) return YamlError.UnexpectedToken;
             return self.parseMultiDocument(.null);
         }
 
         const first_value = try self.parseValue(0);
+        self.had_document = true;
         self.skipCommentsAndBlankLines();
 
         if (self.scanner.isEof()) return first_value;
@@ -120,12 +129,6 @@ pub const Parser = struct {
         return .{ .sequence = seq };
     }
 
-    fn skipDocumentSeparator(self: *Parser) void {
-        self.scanner.skipBytes(3);
-        self.scanner.skipWhitespace();
-        if (self.scanner.peek() == '\n') self.scanner.skip();
-    }
-
     fn isDocBoundaryTerminator(ch: ?u8) bool {
         return ch == null or ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
     }
@@ -148,6 +151,8 @@ pub const Parser = struct {
             if (self.scanner.startWith("YAML") and
                 (self.scanner.peekAt(4) == ' ' or self.scanner.peekAt(4) == '\t'))
             {
+                if (self.has_yaml_directive) return YamlError.UnexpectedToken;
+                self.has_yaml_directive = true;
                 try self.parseYamlVersionDirective();
             }
             self.scanner.skipLine();
@@ -191,14 +196,18 @@ pub const Parser = struct {
     }
 
     fn skipDocumentStart(self: *Parser) void {
-        self.scanner.skipWhitespaceAndNewlines();
-        if (self.scanner.startWith("---")) {
-            if (isDocBoundaryTerminator(self.scanner.peekAt(3))) {
-                self.scanner.skipBytes(3);
-                self.scanner.skipWhitespace();
-                if (self.scanner.peek() == '\n') self.scanner.skip();
-            }
-        }
+        if (!self.scanner.startWith("---")) return;
+        if (!isDocBoundaryTerminator(self.scanner.peekAt(3))) return;
+        self.had_document = true;
+        self.scanner.skipBytes(3);
+        self.scanner.skipWhitespace();
+        if (self.scanner.peek() == '\n') self.scanner.skip();
+    }
+
+    fn skipDocumentSeparator(self: *Parser) void {
+        self.scanner.skipBytes(3);
+        self.scanner.skipWhitespace();
+        if (self.scanner.peek() == '\n') self.scanner.skip();
     }
 
     fn skipInlineComment(self: *Parser) void {
