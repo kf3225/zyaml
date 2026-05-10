@@ -456,20 +456,24 @@ pub const Parser = struct {
                 self.scanner.skip();
                 if (self.scanner.peek() == '\n') {
                     if (self.scanner.countLeadingSpaces() < cont_indent) {
-                        self.scanner.pos = saved_pos;
-                        break;
+                        while (self.scanner.peek() == '\n') self.scanner.skip();
+                        if (self.scanner.countLeadingSpaces() < cont_indent) {
+                            self.scanner.pos = saved_pos;
+                            break;
+                        }
                     }
                     has_newline = true;
                     first_line = false;
                     try writer.writeByte('\n');
                     while (self.scanner.peek() == '\n') {
-                        const blank_saved = self.scanner.pos;
                         self.scanner.skip();
-                        if (!self.isNewlineContinuable(blank_saved, indent)) {
-                            self.scanner.pos = blank_saved;
-                            break;
-                        }
-                        try writer.writeByte('\n');
+                        if (self.scanner.countLeadingSpaces() >= cont_indent) {
+                            try writer.writeByte('\n');
+                        } else break;
+                    }
+                    if (self.scanner.peek() == '\n') {
+                        self.scanner.pos = saved_pos;
+                        break;
                     }
                     self.scanner.skipWhitespace();
                     continue;
