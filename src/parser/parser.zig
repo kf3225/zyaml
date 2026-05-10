@@ -1191,7 +1191,8 @@ pub const Parser = struct {
                 continue;
             }
 
-            const val = try self.parseValue(indent + 2);
+            const content_indent = self.scanner.column - 1;
+            const val = try self.parseValue(content_indent);
             try seq.append(val);
             first_item = false;
         }
