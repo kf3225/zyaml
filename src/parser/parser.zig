@@ -59,7 +59,7 @@ pub const Parser = struct {
         }
 
         if (self.isDocStart() or self.isDocEnd()) {
-            if (self.isDocEnd() and !self.isDocStart()) return YamlError.UnexpectedToken;
+            if (self.isDocEnd() and !self.isDocStart() and self.has_yaml_directive) return YamlError.UnexpectedToken;
             return self.parseMultiDocument(.null);
         }
 
