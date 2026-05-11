@@ -344,6 +344,7 @@ pub const Parser = struct {
             error.TabIndentation,
             error.DuplicateKey,
             error.UnexpectedToken,
+            error.UnclosedScalar,
             => err,
             error.OutOfMemory => error.OutOfMemory,
             else => null,
