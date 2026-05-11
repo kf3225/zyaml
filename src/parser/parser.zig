@@ -1288,46 +1288,49 @@ pub const Parser = struct {
         self.skipCommentsInFlow();
     }
 
+    fn parseExplicitKeyPart(self: *Parser, indent: usize) YamlError!Value {
+        if (self.scanner.peek() == ' ') self.scanner.skip();
+        if (self.hasInlineValue()) {
+            return self.parseValueWithContext(indent + 2, false);
+        }
+        if (self.scanner.peek() == '#') self.skipInlineComment();
+        self.skipNewlines();
+        self.skipBlankLinesAndComments();
+        const key_indent = self.scanner.countIndentAtLineStart();
+        if (key_indent < indent) return .null;
+        self.scanner.skipKnownSpaces(key_indent);
+        return self.parseValueWithContext(key_indent, false);
+    }
+
+    fn parseExplicitValuePart(self: *Parser, indent: usize) YamlError!Value {
+        std.debug.assert(self.scanner.peek() == ':');
+        self.scanner.skip();
+        self.scanner.skipWhitespace();
+        return self.parseEntryValueAfterColon(indent);
+    }
+
     fn parseBlockMapping(self: *Parser, indent: usize) YamlError!Value {
-        _ = self.scanner.skip();
-        _ = self.scanner.skip();
+        std.debug.assert(self.scanner.peek() == '?');
+        self.scanner.skip();
 
         var map = Value.Mapping.init(self.allocator);
         errdefer self.deinitMappingEntries(&map);
 
-        self.scanner.skipWhitespace();
-        var key = try self.parseValue(indent + 2);
+        var key = try self.parseExplicitKeyPart(indent);
         var key_consumed = false;
         errdefer if (!key_consumed) key.deinit(self.allocator);
 
         self.skipCommentsAndBlankLines();
-        const current_indent = self.scanner.countIndentAtLineStart();
-        var has_colon = false;
-        if (current_indent == indent and self.scanner.peek() == ':') {
-            has_colon = true;
-            self.scanner.skip();
-            self.scanner.skipWhitespace();
-        } else if (self.scanner.peek() == ':') {
-            has_colon = true;
-            self.scanner.skip();
-            self.scanner.skipWhitespace();
-        }
-
         var value: Value = .null;
-        if (has_colon) {
+
+        if (self.scanner.countIndentAtLineStart() == indent and self.scanner.peek() == ':') {
+            value = try self.parseExplicitValuePart(indent);
+        } else if (self.scanner.peek() == ':') {
+            self.scanner.skip();
+            self.scanner.skipWhitespace();
             if (self.hasInlineValue()) {
                 value = try self.parseValueWithContext(indent + 2, true);
-            } else if (self.scanner.peek() == '\n') {
-                self.scanner.skip();
-                self.skipNewlines();
-                const val_indent = self.scanner.countIndentAtLineStart();
-                if (val_indent > indent) {
-                    self.scanner.skipKnownSpaces(val_indent);
-                    value = try self.parseValueWithContext(val_indent, true);
-                }
             }
-        } else if (current_indent == indent) {
-            self.scanner.skipKnownSpaces(current_indent);
         }
 
         const key_str = try self.keyToString(key);
@@ -1395,6 +1398,35 @@ pub const Parser = struct {
         const next_indent = self.scanner.countIndentAtLineStart();
         if (next_indent > indent) {
             self.scanner.skipKnownSpaces(next_indent);
+            if (self.scanner.peek() == '&') blk: {
+                const saved = self.scanner.pos;
+                const anchor_val = self.parseAnchoredValue(next_indent) catch {
+                    self.scanner.pos = saved;
+                    break :blk;
+                };
+                if (anchor_val != .null) return anchor_val;
+                const after_indent = self.scanner.countIndentAtLineStart();
+                if (after_indent == indent) {
+                    self.scanner.skipKnownSpaces(after_indent);
+                    const ch = self.scanner.peek() orelse break :blk;
+                    if (ch == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')) {
+                        const seq = try self.parseBlockSequence(indent);
+                        var anchor_it = self.anchors.iterator();
+                        while (anchor_it.next()) |entry| {
+                            if (entry.value_ptr.* == .null) {
+                                const name = try self.allocator.dupe(u8, entry.key_ptr.*);
+                                _ = self.anchors.fetchRemove(entry.key_ptr.*);
+                                const cloned = try seq.deepClone(self.allocator);
+                                try self.anchors.put(name, cloned);
+                                break;
+                            }
+                        }
+                        return seq;
+                    }
+                    self.scanner.pos -= after_indent;
+                }
+                break :blk;
+            }
             return self.parseValueWithContext(next_indent, false);
         }
 
