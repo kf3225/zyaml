@@ -919,10 +919,7 @@ pub const Parser = struct {
             const line_indent = self.scanner.countLeadingSpaces();
             const pre_skip = self.scanner.pos;
             const tab_pos = self.scanner.pos + line_indent;
-            const tab_indent = tab_pos < self.scanner.source.len and self.scanner.source[tab_pos] == '\t';
-            if (tab_indent and line_indent == 0 and !indent_detected) {
-                return YamlError.TabIndentation;
-            }
+            const tab_content = tab_pos < self.scanner.source.len and self.scanner.source[tab_pos] == '\t';
             if (indent_detected and line_indent > content_indent) {
                 self.scanner.skipKnownSpaces(content_indent);
             } else {
@@ -960,7 +957,11 @@ pub const Parser = struct {
             }
 
             if (!indent_detected) {
-                if (line_indent == 0 and parent_indent > 0) break;
+                if (line_indent == 0 and parent_indent > 0 and !tab_content) break;
+                if (tab_content and line_indent == 0 and parent_indent > 0) {
+                    const after_tab = self.scanner.peekAt(1);
+                    if (after_tab == '\n' or after_tab == null) return YamlError.TabIndentation;
+                }
                 if (max_blank_indent > 0 and max_blank_indent > line_indent) {
                     return YamlError.InvalidIndentation;
                 }
