@@ -664,6 +664,10 @@ pub const Parser = struct {
             self.scanner.skipWhitespace();
             return;
         }
+        if (self.flow_depth == 0 and self.scanner.column <= 1) {
+            if (self.scanner.startWith("---") and isDocBoundaryTerminator(self.scanner.peekAt(3))) return YamlError.UnclosedScalar;
+            if (self.scanner.startWith("...") and isDocBoundaryTerminator(self.scanner.peekAt(3))) return YamlError.UnclosedScalar;
+        }
         if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
             try result.append(' ');
         } else if (result.items.len == 0) {
