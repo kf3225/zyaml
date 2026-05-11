@@ -133,7 +133,14 @@ pub const Parser = struct {
                 self.skipCommentsAndBlankLines();
                 try self.skipDirectives();
                 self.skipCommentsAndBlankLines();
-                if (!self.isDocStart() and !self.isDocEnd()) break;
+                if (!self.isDocStart() and !self.isDocEnd()) {
+                    if (!self.scanner.isEof() and self.scanner.peek() != null and self.scanner.peek() != '\n') {
+                        try seq.append(try self.parseValue(0));
+                        self.skipCommentsAndBlankLines();
+                        continue;
+                    }
+                    break;
+                }
                 continue;
             }
             self.skipDocumentSeparator();
