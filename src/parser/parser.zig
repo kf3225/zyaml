@@ -464,16 +464,19 @@ pub const Parser = struct {
                     }
                     has_newline = true;
                     first_line = false;
-                    try writer.writeByte('\n');
+                    var blank_count: usize = 0;
                     while (self.scanner.peek() == '\n') {
                         self.scanner.skip();
                         if (self.scanner.countLeadingSpaces() >= cont_indent) {
-                            try writer.writeByte('\n');
+                            blank_count += 1;
                         } else break;
                     }
                     if (self.scanner.peek() == '\n') {
                         self.scanner.pos = saved_pos;
                         break;
+                    }
+                    for (0..blank_count) |_| {
+                        try writer.writeByte('\n');
                     }
                     self.scanner.skipWhitespace();
                     continue;
@@ -522,12 +525,15 @@ pub const Parser = struct {
                 if (next == ' ' or next == '\t' or next == '\n' or next == null) break;
             }
             if (ch == ' ' or ch == '\t') {
-                const ws_start = self.scanner.pos;
                 self.scanner.skipWhitespace();
-                try writer.writeSlice(self.scanner.source[ws_start..self.scanner.pos]);
                 const next = self.scanner.peek() orelse break;
                 if (next == '\n') continue;
                 if (next == ',' or next == ']' or next == '}') break;
+                if (next == '#') {
+                    const prev = self.scanner.source[self.scanner.pos - 1];
+                    if (prev == ' ' or prev == '\t') break;
+                }
+                try writer.writeByte(' ');
                 continue;
             }
             if (ch == '#') {
@@ -1376,7 +1382,16 @@ pub const Parser = struct {
             if (ch == ' ' or ch == '\n') break;
             self.scanner.skip();
         }
-        const result = self.scanner.peek() == '\n' or self.scanner.isEof();
+        if (self.scanner.peek() == '\n' or self.scanner.isEof()) {
+            self.scanner.pos = saved;
+            return true;
+        }
+        while (self.scanner.peek()) |ch| {
+            if (ch == ' ') {
+                self.scanner.skip();
+            } else break;
+        }
+        const result = self.scanner.peek() == '#' or self.scanner.isEof();
         self.scanner.pos = saved;
         return result;
     }
@@ -1642,6 +1657,9 @@ pub const Parser = struct {
 
     fn parseNextEntryValue(self: *Parser, indent: usize) YamlError!Value {
         if (self.hasInlineValue()) {
+            if (self.isNextAnchorOnOwnLine()) {
+                return self.parseAnchoredValue(indent + 1);
+            }
             return self.parseValueAsEntry(indent + 2);
         }
 
