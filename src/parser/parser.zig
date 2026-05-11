@@ -1224,6 +1224,16 @@ pub const Parser = struct {
         if (ch == '\'') return self.parseSingleQuotedScalar();
         if (ch == '[') return self.parseFlowSequence();
         if (ch == '{') return self.parseFlowMapping();
+        if (ch == '&') {
+            const anchored = try self.parseAnchoredValue(0);
+            self.scanner.skipWhitespace();
+            return anchored;
+        }
+        if (ch == '*') {
+            const alias_val = try self.parseAlias();
+            self.scanner.skipWhitespace();
+            return alias_val;
+        }
         if (ch == '!') {
             const saved = self.scanner.pos;
             const tagged = try self.parseTaggedValue(0);
