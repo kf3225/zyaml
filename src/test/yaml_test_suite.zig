@@ -28,20 +28,28 @@ fn fileExists(dir: std.fs.Dir, name: []const u8) bool {
 }
 
 fn valuesEqual(a: zyaml.YamlValue, b: zyaml.YamlValue) bool {
-    if (@as(std.meta.Tag(zyaml.YamlValue), a) != @as(std.meta.Tag(zyaml.YamlValue), b)) return false;
     switch (a) {
-        .null => return true,
-        .boolean => return a.boolean == b.boolean,
-        .integer => return a.integer == b.integer,
-        .float => {
-            const fa = a.float;
-            const fb = b.float;
-            if (std.math.isNan(fa) and std.math.isNan(fb)) return true;
-            if (std.math.isInf(fa) and std.math.isInf(fb)) return std.math.sign(fa) == std.math.sign(fb);
-            return @abs(fa - fb) <= 0.0001;
+        .null => return b == .null,
+        .boolean => return b == .boolean and a.boolean == b.boolean,
+        .integer => {
+            if (b == .integer) return a.integer == b.integer;
+            if (b == .float) return @as(f64, @floatFromInt(a.integer)) == b.float;
+            return false;
         },
-        .string => return std.mem.eql(u8, a.string, b.string),
+        .float => {
+            if (b == .float) {
+                const fa = a.float;
+                const fb = b.float;
+                if (std.math.isNan(fa) and std.math.isNan(fb)) return true;
+                if (std.math.isInf(fa) and std.math.isInf(fb)) return std.math.sign(fa) == std.math.sign(fb);
+                return @abs(fa - fb) <= 0.0001;
+            }
+            if (b == .integer) return a.float == @as(f64, @floatFromInt(b.integer));
+            return false;
+        },
+        .string => return b == .string and std.mem.eql(u8, a.string, b.string),
         .sequence => {
+            if (b != .sequence) return false;
             if (a.sequence.items.len != b.sequence.items.len) return false;
             for (a.sequence.items, b.sequence.items) |item_a, item_b| {
                 if (!valuesEqual(item_a, item_b)) return false;
@@ -49,6 +57,7 @@ fn valuesEqual(a: zyaml.YamlValue, b: zyaml.YamlValue) bool {
             return true;
         },
         .mapping => {
+            if (b != .mapping) return false;
             if (a.mapping.count() != b.mapping.count()) return false;
             var iter = a.mapping.iterator();
             while (iter.next()) |entry| {
@@ -152,7 +161,11 @@ fn runTest(allocator: std.mem.Allocator, test_dir: std.fs.Dir, id: []const u8, l
             var jsonv = json_val;
             defer jsonv.deinit(allocator);
             if (!valuesEqual(result, jsonv)) {
-                log.writer().print("{s} FAIL(diff)\n", .{id}) catch {};
+                const actual = zyaml.stringify(allocator, result) catch "??";
+                defer if (std.mem.eql(u8, actual, "??")) {} else allocator.free(actual);
+                const expected = zyaml.stringify(allocator, jsonv) catch "??";
+                defer if (std.mem.eql(u8, expected, "??")) {} else allocator.free(expected);
+                log.writer().print("{s} FAIL(diff)\n  actual:   {s}\n  expected: {s}\n", .{ id, actual, expected }) catch {};
                 return .fail;
             }
         }

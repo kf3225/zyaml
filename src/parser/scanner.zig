@@ -148,13 +148,11 @@ pub const Scanner = struct {
 
     pub fn hasTabAsLeadingIndent(self: Scanner) bool {
         var pos = self.lineStartOffset();
-        var saw_space = false;
         while (pos < self.source.len) : (pos += 1) {
             if (self.source[pos] == ' ') {
-                saw_space = true;
+                continue;
             } else if (self.source[pos] == '\t') {
-                if (!saw_space) return true;
-                return false;
+                return true;
             } else {
                 break;
             }

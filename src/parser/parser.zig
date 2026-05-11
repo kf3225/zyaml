@@ -77,11 +77,15 @@ pub const Parser = struct {
             self.scanner.skipWhitespace();
             const after = self.scanner.peek();
             if (after != null and after != '\n' and after != '#') {
-                var first = first_value;
-                first.deinit(self.allocator);
+                var fv = first_value;
+                fv.deinit(self.allocator);
                 return YamlError.UnexpectedToken;
             }
             self.scanner.skipLine();
+            self.skipCommentsAndBlankLines();
+            if (!self.scanner.isEof()) {
+                return self.parseMultiDocument(first_value);
+            }
             return first_value;
         }
         var first = first_value;
@@ -97,17 +101,40 @@ pub const Parser = struct {
         }
         try seq.append(first_value);
 
+        if (!self.scanner.isEof() and !self.isDocStart() and !self.isDocEnd()) {
+            try seq.append(try self.parseValue(0));
+            self.skipCommentsAndBlankLines();
+        }
+
         while (self.isDocStart() or self.isDocEnd()) {
             if (self.isDocEnd()) {
                 self.scanner.skipBytes(3);
                 self.scanner.skipWhitespace();
                 const after = self.scanner.peek();
-                if (after != null and after != '\n' and after != '#') return YamlError.UnexpectedToken;
+                if (after != null and after != '\n' and after != '#') {
+                    self.scanner.skipLine();
+                    self.skipCommentsAndBlankLines();
+                    if (!self.isDocStart()) {
+                        try seq.append(try self.parseValue(0));
+                        self.skipCommentsAndBlankLines();
+                        continue;
+                    }
+                    self.skipDocumentSeparator();
+                    self.skipCommentsAndBlankLines();
+                    if (self.scanner.isEof()) {
+                        try seq.append(.null);
+                        break;
+                    }
+                    try seq.append(try self.parseValue(0));
+                    self.skipCommentsAndBlankLines();
+                    continue;
+                }
                 self.scanner.skipLine();
                 self.skipCommentsAndBlankLines();
                 try self.skipDirectives();
                 self.skipCommentsAndBlankLines();
                 if (!self.isDocStart()) break;
+                continue;
             }
             self.skipDocumentSeparator();
             self.skipCommentsAndBlankLines();
@@ -124,6 +151,12 @@ pub const Parser = struct {
 
             try seq.append(try self.parseValue(0));
             self.skipCommentsAndBlankLines();
+        }
+
+        if (seq.items.len == 1) {
+            const single = seq.items[0];
+            seq.deinit();
+            return single;
         }
 
         return .{ .sequence = seq };
@@ -321,7 +354,7 @@ pub const Parser = struct {
                     return self.parseBlockSequence(indent);
             },
             '?' => {
-                if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\n')
+                if (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')
                     return self.parseBlockMapping(indent);
             },
             '&' => return self.tryAsMappingOrReturn(try self.parseAnchoredValue(indent), indent, in_mapping_value),
@@ -455,13 +488,6 @@ pub const Parser = struct {
                 const saved_pos = self.scanner.pos;
                 self.scanner.skip();
                 if (self.scanner.peek() == '\n') {
-                    if (self.scanner.countLeadingSpaces() < cont_indent) {
-                        while (self.scanner.peek() == '\n') self.scanner.skip();
-                        if (self.scanner.countLeadingSpaces() < cont_indent) {
-                            self.scanner.pos = saved_pos;
-                            break;
-                        }
-                    }
                     has_newline = true;
                     first_line = false;
                     var blank_count: usize = 0;
@@ -469,9 +495,15 @@ pub const Parser = struct {
                         self.scanner.skip();
                         if (self.scanner.countLeadingSpaces() >= cont_indent) {
                             blank_count += 1;
-                        } else break;
+                        } else if (self.scanner.peek() != null and self.scanner.peek() != '\n') {
+                            break;
+                        }
                     }
-                    if (self.scanner.peek() == '\n') {
+                    if (self.scanner.peek() == '\n' or self.scanner.isEof()) {
+                        self.scanner.pos = saved_pos;
+                        break;
+                    }
+                    if (self.scanner.countLeadingSpaces() < cont_indent) {
                         self.scanner.pos = saved_pos;
                         break;
                     }
@@ -606,6 +638,8 @@ pub const Parser = struct {
             return;
         }
         if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
+            try result.append(' ');
+        } else if (result.items.len == 0) {
             try result.append(' ');
         }
     }
@@ -839,14 +873,11 @@ pub const Parser = struct {
         return header;
     }
 
-    fn appendFoldedSeparator(result: *std.ArrayList(u8), trailing: usize, line_indent: usize, content_indent: usize, first: bool) !void {
+    fn appendFoldedSeparator(result: *std.ArrayList(u8), trailing: usize, line_indent: usize, content_indent: usize, first: bool, prev_extra: bool) !void {
         if (first) return;
         if (trailing >= 1) {
-            if (line_indent > content_indent) {
-                try result.appendNTimes('\n', trailing + 1);
-            } else {
-                try result.appendNTimes('\n', trailing);
-            }
+            const extra: usize = if (line_indent > content_indent or prev_extra) 1 else 0;
+            try result.appendNTimes('\n', trailing + extra);
         } else if (line_indent > content_indent) {
             try result.append('\n');
         } else {
@@ -880,11 +911,17 @@ pub const Parser = struct {
         var trailing_newlines: usize = 0;
         var first_content = true;
         var max_blank_indent: usize = 0;
+        var prev_line_extra = false;
 
         while (!self.scanner.isEof()) {
             const line_indent = self.scanner.countLeadingSpaces();
+            const tab_pos = self.scanner.pos + line_indent;
+            const tab_indent = tab_pos < self.scanner.source.len and self.scanner.source[tab_pos] == '\t';
+            if (tab_indent and line_indent == 0 and !indent_detected) {
+                return YamlError.TabIndentation;
+            }
             const pre_skip = self.scanner.pos;
-            if (indent_detected and indicator == '>' and line_indent > content_indent) {
+            if (indent_detected and line_indent > content_indent) {
                 self.scanner.skipKnownSpaces(content_indent);
             } else {
                 self.scanner.skipKnownSpaces(line_indent);
@@ -941,11 +978,12 @@ pub const Parser = struct {
             }
 
             if (indicator == '>') {
-                try appendFoldedSeparator(&result, trailing_newlines, line_indent, content_indent, first_content);
+                try appendFoldedSeparator(&result, trailing_newlines, line_indent, content_indent, first_content, prev_line_extra);
             } else if (!first_content) {
                 try result.appendNTimes('\n', trailing_newlines + 1);
             }
             trailing_newlines = 0;
+            prev_line_extra = line_indent > content_indent;
 
             const line_content = self.readRestOfLine();
             if (indicator == '>') {
@@ -1315,6 +1353,7 @@ pub const Parser = struct {
 
     fn parseExplicitKeyPart(self: *Parser, indent: usize) YamlError!Value {
         if (self.scanner.peek() == ' ') self.scanner.skip();
+        if (self.scanner.peek() == '\t') return YamlError.TabIndentation;
         if (self.hasInlineValue()) {
             return self.parseValueWithContext(indent + 2, false);
         }
@@ -1330,6 +1369,7 @@ pub const Parser = struct {
     fn parseExplicitValuePart(self: *Parser, indent: usize) YamlError!Value {
         std.debug.assert(self.scanner.peek() == ':');
         self.scanner.skip();
+        if (self.scanner.peek() == '\t') return YamlError.TabIndentation;
         self.scanner.skipWhitespace();
         return self.parseEntryValueAfterColon(indent);
     }
@@ -1506,9 +1546,39 @@ pub const Parser = struct {
             try self.checkTabIndent();
             self.scanner.skipKnownSpaces(current_indent);
 
-            if (self.scanner.peek() == '?' and self.scanner.peekAt(1) == ' ') {
+            if (self.scanner.peek() == '?' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t')) {
                 const sub = try self.parseBlockMapping(indent);
                 try self.mergeSubMapping(map, sub);
+                continue;
+            }
+
+            if (self.scanner.peek() == '&') {
+                self.scanner.skip();
+                const anchor_name = try self.readAnchorName();
+                self.scanner.skipWhitespace();
+
+                const key_val = try self.parseValueWithContext(indent, true);
+                const akey = try self.keyToString(key_val);
+                var kv = key_val;
+                kv.deinit(self.allocator);
+
+                self.scanner.skipWhitespace();
+                var val: Value = .null;
+                if (self.scanner.peek() == ':') {
+                    self.scanner.skip();
+                    self.scanner.skipWhitespace();
+                    val = try self.parseEntryValueAfterColon(indent);
+                }
+
+                if (self.anchors.fetchRemove(anchor_name)) |removed| {
+                    self.allocator.free(removed.key);
+                    var rv = removed.value;
+                    rv.deinit(self.allocator);
+                }
+                const cloned = try val.deepClone(self.allocator);
+                try self.anchors.put(anchor_name, cloned);
+
+                try map.put(akey, val);
                 continue;
             }
 
@@ -1645,6 +1715,8 @@ pub const Parser = struct {
                 continue;
             }
 
+            const saved_line_start = self.scanner.line_start;
+            const before_key = self.scanner.pos;
             const next_key_val = try self.parsePlainScalar(indent);
             const next_key_str = try self.keyToString(next_key_val);
             var nkv = next_key_val;
@@ -1655,6 +1727,9 @@ pub const Parser = struct {
             self.scanner.skipWhitespace();
             if (self.scanner.peek() != ':') {
                 self.allocator.free(next_key_str);
+                if (before_key == saved_line_start or self.scanner.peek() == null) {
+                    self.scanner.pos = before_key;
+                }
                 break;
             }
             self.scanner.skip();
