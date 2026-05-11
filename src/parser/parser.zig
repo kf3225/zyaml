@@ -410,7 +410,7 @@ pub const Parser = struct {
             self.scanner.pos = saved_pos;
             return false;
         }
-        if (next_ch == '-' and self.scanner.peekAt(next_indent + 1) == ' ') {
+        if (next_ch == '-' and (self.scanner.peekAt(next_indent + 1) == ' ' or self.scanner.peekAt(next_indent + 1) == '\t' or self.scanner.peekAt(next_indent + 1) == '\n') and next_indent < indent) {
             self.scanner.pos = saved_pos;
             return false;
         }
