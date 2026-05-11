@@ -49,9 +49,9 @@ pub const Parser = struct {
 
     pub fn parse(self: *Parser) YamlError!Value {
         try self.skipDirectives();
-        self.skipDocumentStart();
+        const first_marker = self.skipDocumentStart();
         self.skipCommentsAndBlankLines();
-        self.skipDocumentStart();
+        if (!first_marker) _ = self.skipDocumentStart();
 
         if (self.scanner.isEof()) {
             if (self.has_yaml_directive and !self.had_document) return YamlError.UnexpectedToken;
@@ -235,13 +235,14 @@ pub const Parser = struct {
         }
     }
 
-    fn skipDocumentStart(self: *Parser) void {
-        if (!self.scanner.startWith("---")) return;
-        if (!isDocBoundaryTerminator(self.scanner.peekAt(3))) return;
+    fn skipDocumentStart(self: *Parser) bool {
+        if (!self.scanner.startWith("---")) return false;
+        if (!isDocBoundaryTerminator(self.scanner.peekAt(3))) return false;
         self.had_document = true;
         self.scanner.skipBytes(3);
         self.scanner.skipWhitespace();
         if (self.scanner.peek() == '\n') self.scanner.skip();
+        return true;
     }
 
     fn skipDocumentSeparator(self: *Parser) void {
@@ -915,7 +916,7 @@ pub const Parser = struct {
 
         if (self.scanner.isEof()) return .{ .string = try result.toOwnedSlice() };
 
-        var content_indent: usize = header.explicit_indent orelse 0;
+        var content_indent: usize = if (header.explicit_indent) |ei| (parent_indent -| 2) + ei else 0;
         var indent_detected = header.explicit_indent != null;
         var trailing_newlines: usize = 0;
         var first_content = true;
