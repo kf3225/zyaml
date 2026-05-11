@@ -15,6 +15,7 @@ pub const ErrorKind = enum {
     circular_reference,
     unexpected_token,
     expected_value,
+    anchor_on_alias,
 };
 
 pub const ErrorInfo = struct {
@@ -40,6 +41,7 @@ pub const YamlError = error{
     CircularReference,
     UnexpectedToken,
     ExpectedValue,
+    AnchorOnAlias,
     OutOfMemory,
     InvalidUtf8,
     UnexpectedEof,

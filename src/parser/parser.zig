@@ -23,7 +23,7 @@ pub const Parser = struct {
     flow_depth: usize,
     has_yaml_directive: bool,
     had_document: bool,
-    quoted_start_col: usize,
+    quoted_scalar_indent: usize,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         return .{
@@ -35,7 +35,7 @@ pub const Parser = struct {
             .flow_depth = 0,
             .has_yaml_directive = false,
             .had_document = false,
-            .quoted_start_col = 0,
+            .quoted_scalar_indent = 0,
         };
     }
 
@@ -367,6 +367,7 @@ pub const Parser = struct {
         if (self.depth >= MAX_DEPTH) return YamlError.InvalidDocument;
         self.depth += 1;
         defer self.depth -= 1;
+        self.quoted_scalar_indent = indent;
 
         self.scanner.skipWhitespace();
         if (self.scanner.isEof()) return .null;
@@ -670,7 +671,7 @@ pub const Parser = struct {
         if (self.flow_depth == 0 and self.scanner.column <= 1) {
             if (self.scanner.startWith("---") and isDocBoundaryTerminator(self.scanner.peekAt(3))) return YamlError.UnclosedScalar;
             if (self.scanner.startWith("...") and isDocBoundaryTerminator(self.scanner.peekAt(3))) return YamlError.UnclosedScalar;
-            if (self.quoted_start_col > 1) return YamlError.UnclosedScalar;
+            if (self.quoted_scalar_indent > 0) return YamlError.UnclosedScalar;
         }
         if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
             try result.append(' ');
@@ -713,7 +714,6 @@ pub const Parser = struct {
 
     fn parseDoubleQuotedScalar(self: *Parser) YamlError!Value {
         std.debug.assert(self.scanner.peek() == '"');
-        self.quoted_start_col = self.scanner.column;
         self.scanner.skip();
 
         var result = std.ArrayList(u8).init(self.allocator);
@@ -842,7 +842,6 @@ pub const Parser = struct {
 
     fn parseSingleQuotedScalar(self: *Parser) YamlError!Value {
         std.debug.assert(self.scanner.peek() == '\'');
-        self.quoted_start_col = self.scanner.column;
         self.scanner.skip();
 
         var result = std.ArrayList(u8).init(self.allocator);
@@ -1603,6 +1602,8 @@ pub const Parser = struct {
                 const anchor_name = try self.readAnchorName();
                 self.scanner.skipWhitespace();
 
+                if (self.scanner.peek() == '*') return YamlError.AnchorOnAlias;
+
                 const key_val = try self.parseValueWithContext(indent, true);
                 const akey = try self.keyToString(key_val);
                 var kv = key_val;
@@ -1848,6 +1849,10 @@ pub const Parser = struct {
         self.scanner.skipWhitespace();
 
         const after_anchor = self.scanner.peek() orelse 0;
+
+        if (after_anchor == '*') return YamlError.AnchorOnAlias;
+
+        if (after_anchor == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')) return YamlError.UnexpectedToken;
 
         if (after_anchor == '#') {
             self.scanner.skipLine();
