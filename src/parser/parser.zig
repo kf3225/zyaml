@@ -533,6 +533,10 @@ pub const Parser = struct {
                     const prev = self.scanner.source[self.scanner.pos - 1];
                     if (prev == ' ' or prev == '\t') break;
                 }
+                if (next == ':') {
+                    const after = self.scanner.peekAt(1);
+                    if (after == ' ' or after == '\t' or after == '\n' or after == null) break;
+                }
                 try writer.writeByte(' ');
                 continue;
             }
@@ -620,12 +624,17 @@ pub const Parser = struct {
                 const saved = self.scanner.pos;
                 self.scanner.skipWhitespace();
                 const after = self.scanner.peek();
-                self.scanner.pos = saved;
-                if (after == '#' or after == '\n' or after == '\r' or after == null) return;
+                if (after == '#' or after == '\n' or after == '\r' or after == null) {
+                    return;
+                }
                 if (after == ':') {
                     const next2 = self.scanner.peekAt(self.scanner.pos - saved + 2);
-                    if (next2 == ' ' or next2 == '\t' or next2 == '\n' or next2 == '\r' or next2 == null) return;
+                    if (next2 == ' ' or next2 == '\t' or next2 == '\n' or next2 == '\r' or next2 == null) {
+                        self.scanner.pos = saved;
+                        return;
+                    }
                 }
+                self.scanner.pos = saved;
                 return YamlError.UnexpectedToken;
             }
             if (ch == '\n' or ch == '\r') return;
