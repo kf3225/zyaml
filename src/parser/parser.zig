@@ -133,7 +133,7 @@ pub const Parser = struct {
                 self.skipCommentsAndBlankLines();
                 try self.skipDirectives();
                 self.skipCommentsAndBlankLines();
-                if (!self.isDocStart()) break;
+                if (!self.isDocStart() and !self.isDocEnd()) break;
                 continue;
             }
             self.skipDocumentSeparator();
@@ -917,12 +917,12 @@ pub const Parser = struct {
 
         while (!self.scanner.isEof()) {
             const line_indent = self.scanner.countLeadingSpaces();
+            const pre_skip = self.scanner.pos;
             const tab_pos = self.scanner.pos + line_indent;
             const tab_indent = tab_pos < self.scanner.source.len and self.scanner.source[tab_pos] == '\t';
             if (tab_indent and line_indent == 0 and !indent_detected) {
                 return YamlError.TabIndentation;
             }
-            const pre_skip = self.scanner.pos;
             if (indent_detected and line_indent > content_indent) {
                 self.scanner.skipKnownSpaces(content_indent);
             } else {
