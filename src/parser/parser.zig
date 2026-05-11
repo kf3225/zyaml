@@ -662,10 +662,15 @@ pub const Parser = struct {
         }
         self.scanner.skip();
         self.scanner.skipWhitespace();
-        if (self.scanner.peek() == '\n') {
+        const after_ws = self.scanner.peek() orelse 0;
+        if (after_ws == '\n') {
             try result.append('\n');
             self.scanner.skip();
             self.scanner.skipWhitespace();
+            return;
+        }
+        if ((after_ws == '"' or after_ws == '\'') and result.items.len > 0 and result.items[result.items.len - 1] == '\n') {
+            try result.append('\n');
             return;
         }
         if (self.flow_depth == 0 and self.scanner.column <= 1) {
