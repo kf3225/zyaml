@@ -874,11 +874,13 @@ pub const Parser = struct {
     }
 
     fn appendFoldedSeparator(result: *std.ArrayList(u8), trailing: usize, line_indent: usize, content_indent: usize, first: bool, prev_extra: bool) !void {
-        if (first) return;
+        if (first and trailing == 0) return;
         if (trailing >= 1) {
-            const extra: usize = if (line_indent > content_indent or prev_extra) 1 else 0;
+            const extra: usize = if (!first and (line_indent > content_indent or prev_extra)) 1 else 0;
             try result.appendNTimes('\n', trailing + extra);
-        } else if (line_indent > content_indent) {
+        } else if (first) {
+            return;
+        } else if (line_indent > content_indent or prev_extra) {
             try result.append('\n');
         } else {
             try result.append(' ');
