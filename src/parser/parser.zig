@@ -101,12 +101,31 @@ pub const Parser = struct {
         }
         try seq.append(first_value);
 
-        if (!self.scanner.isEof() and !self.isDocStart() and !self.isDocEnd()) {
+        if (!self.scanner.isEof() and !self.isDocStart() and !self.isDocEnd() and self.scanner.peek() != '%') {
             try seq.append(try self.parseValue(0));
             self.skipCommentsAndBlankLines();
         }
 
-        while (self.isDocStart() or self.isDocEnd()) {
+        while (self.isDocStart() or self.isDocEnd() or self.scanner.peek() == '%') {
+            if (self.scanner.peek() == '%') {
+                self.has_yaml_directive = false;
+                try self.skipDirectives();
+                self.skipCommentsAndBlankLines();
+                if (!self.isDocStart()) break;
+                self.skipDocumentSeparator();
+                self.skipCommentsAndBlankLines();
+                if (self.scanner.isEof()) {
+                    try seq.append(.null);
+                    break;
+                }
+                if (self.isDocStart() or self.isDocEnd()) {
+                    try seq.append(.null);
+                    continue;
+                }
+                try seq.append(try self.parseValue(0));
+                self.skipCommentsAndBlankLines();
+                continue;
+            }
             if (self.isDocEnd()) {
                 self.scanner.skipBytes(3);
                 self.scanner.skipWhitespace();
@@ -946,6 +965,12 @@ pub const Parser = struct {
                     trailing_newlines += 1;
                 }
                 break;
+            }
+            if (line_indent == 0 and (self.scanner.startWith("---") or self.scanner.startWith("..."))) {
+                if (isDocBoundaryTerminator(self.scanner.peekAt(3))) {
+                    self.scanner.pos = pre_skip;
+                    break;
+                }
             }
             if (self.scanner.peek() == '\n') {
                 if (!indent_detected) {
