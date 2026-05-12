@@ -18,7 +18,7 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     scanner: Scanner,
     anchors: std.StringHashMap(Value),
-    building_anchors: std.ArrayList([]const u8),
+    pending_anchor: ?[]const u8,
     depth: usize,
     alias_clone_count: usize,
     flow_depth: usize,
@@ -35,7 +35,7 @@ pub const Parser = struct {
             .allocator = allocator,
             .scanner = Scanner.init(source),
             .anchors = std.StringHashMap(Value).init(allocator),
-            .building_anchors = std.ArrayList([]const u8).init(allocator),
+            .pending_anchor = null,
             .depth = 0,
             .alias_clone_count = 0,
             .flow_depth = 0,
@@ -57,8 +57,7 @@ pub const Parser = struct {
             val.deinit(self.allocator);
         }
         self.anchors.deinit();
-        for (self.building_anchors.items) |key| self.allocator.free(key);
-        self.building_anchors.deinit();
+        if (self.pending_anchor) |p| self.allocator.free(p);
         self.clearTagHandles();
     }
 
@@ -1318,6 +1317,11 @@ pub const Parser = struct {
             try self.skipFlowWhitespaceAndComments();
 
             if (self.scanner.peek() == ',' or self.scanner.peek() == '}') {
+                if (map.fetchSwapRemove(key_str)) |old| {
+                    self.allocator.free(old.key);
+                    var ov = old.value;
+                    ov.deinit(self.allocator);
+                }
                 try map.put(key_str, .null);
                 continue;
             }
@@ -1333,6 +1337,11 @@ pub const Parser = struct {
                 value = try self.parseValueAsEntry(0);
             }
 
+            if (map.fetchSwapRemove(key_str)) |old| {
+                self.allocator.free(old.key);
+                var ov = old.value;
+                ov.deinit(self.allocator);
+            }
             try map.put(key_str, value);
 
             try self.skipFlowWhitespaceAndComments();
@@ -1890,7 +1899,12 @@ pub const Parser = struct {
             var cv = cloned;
             cv.deinit(self.allocator);
         }
-        try self.anchors.put(anchor_name, cloned);
+        const replaced = try self.anchors.fetchPut(anchor_name, cloned);
+        if (replaced) |r| {
+            self.allocator.free(r.key);
+            var rv = r.value;
+            rv.deinit(self.allocator);
+        }
         try map.put(akey, val);
         return .consumed;
     }
@@ -2131,13 +2145,8 @@ pub const Parser = struct {
 
         if (after_anchor == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')) return YamlError.UnexpectedToken;
 
-        const anchor_copy = try self.allocator.dupe(u8, anchor);
-        try self.building_anchors.append(anchor_copy);
-        const building_idx = self.building_anchors.items.len - 1;
-        errdefer {
-            _ = self.building_anchors.pop();
-            self.allocator.free(anchor_copy);
-        }
+        self.pending_anchor = anchor;
+        errdefer self.pending_anchor = null;
 
         if (after_anchor == '#') {
             self.scanner.skipLine();
@@ -2166,9 +2175,16 @@ pub const Parser = struct {
             var cv = cloned;
             cv.deinit(self.allocator);
         }
-        try self.anchors.put(anchor, cloned);
-        _ = self.building_anchors.swapRemove(building_idx);
-        self.allocator.free(anchor_copy);
+        const old = self.anchors.fetchRemove(anchor);
+        if (old) |o| {
+            self.allocator.free(o.key);
+            var ov = o.value;
+            ov.deinit(self.allocator);
+        }
+        const anchor_key = try self.allocator.dupe(u8, anchor);
+        try self.anchors.put(anchor_key, cloned);
+        self.pending_anchor = null;
+        self.allocator.free(anchor);
 
         return value;
     }
@@ -2180,8 +2196,8 @@ pub const Parser = struct {
         const anchor = try self.readAnchorName();
         defer self.allocator.free(anchor);
 
-        for (self.building_anchors.items) |name| {
-            if (std.mem.eql(u8, anchor, name)) {
+        if (self.pending_anchor) |pending| {
+            if (std.mem.eql(u8, anchor, pending)) {
                 return .{ .sequence = Value.Sequence.init(self.allocator) };
             }
         }
