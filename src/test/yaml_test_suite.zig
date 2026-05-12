@@ -179,6 +179,35 @@ fn runTest(allocator: std.mem.Allocator, test_dir: std.fs.Dir, id: []const u8, l
     return .pass;
 }
 
+fn processDir(allocator: std.mem.Allocator, dir: std.fs.Dir, id: []const u8, log: std.fs.File, passed: *usize, failed: *usize, skipped_count: *usize) void {
+    if (fileExists(dir, "in.yaml")) {
+        const r = runTest(allocator, dir, id, log) catch |err| {
+            log.writer().print("{s} CRASH({})\n", .{ id, err }) catch {};
+            failed.* += 1;
+            return;
+        };
+        switch (r) {
+            .pass => passed.* += 1,
+            .fail => failed.* += 1,
+            .skip => skipped_count.* += 1,
+        }
+        return;
+    }
+
+    var iter = dir.iterate();
+    while (iter.next() catch return) |entry| {
+        if (entry.kind != .directory and entry.kind != .sym_link) continue;
+
+        var sub_dir = dir.openDir(entry.name, .{}) catch continue;
+        defer sub_dir.close();
+
+        const sub_id = std.fmt.allocPrint(allocator, "{s}/{s}", .{ id, entry.name }) catch continue;
+        defer allocator.free(sub_id);
+
+        processDir(allocator, sub_dir, sub_id, log, passed, failed, skipped_count);
+    }
+}
+
 test "yaml-test-suite" {
     const allocator = std.testing.allocator;
 
@@ -199,44 +228,10 @@ test "yaml-test-suite" {
     while (try top_iter.next()) |top_entry| {
         if (top_entry.kind != .directory) continue;
 
-        var sub_dir = suite_dir.openDir(top_entry.name, .{ .iterate = true }) catch continue;
+        var sub_dir = suite_dir.openDir(top_entry.name, .{}) catch continue;
         defer sub_dir.close();
 
-        if (fileExists(sub_dir, "in.yaml")) {
-            const r = runTest(allocator, sub_dir, top_entry.name, log) catch |err| {
-                log.writer().print("{s} CRASH({})\n", .{ top_entry.name, err }) catch {};
-                failed += 1;
-                continue;
-            };
-            switch (r) {
-                .pass => passed += 1,
-                .fail => failed += 1,
-                .skip => skipped_count += 1,
-            }
-            continue;
-        }
-
-        var sub_iter = sub_dir.iterate();
-        while (try sub_iter.next()) |sub_entry| {
-            if (sub_entry.kind != .directory and sub_entry.kind != .sym_link) continue;
-
-            var test_dir = sub_dir.openDir(sub_entry.name, .{}) catch continue;
-            defer test_dir.close();
-
-            const id = std.fmt.allocPrint(allocator, "{s}/{s}", .{ top_entry.name, sub_entry.name }) catch continue;
-            defer allocator.free(id);
-
-            const r = runTest(allocator, test_dir, id, log) catch |err| {
-                log.writer().print("{s} CRASH({})\n", .{ id, err }) catch {};
-                failed += 1;
-                continue;
-            };
-            switch (r) {
-                .pass => passed += 1,
-                .fail => failed += 1,
-                .skip => skipped_count += 1,
-            }
-        }
+        processDir(allocator, sub_dir, top_entry.name, log, &passed, &failed, &skipped_count);
     }
 
     const total = passed + failed + skipped_count;
