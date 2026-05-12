@@ -138,4 +138,21 @@ pub fn build(b: *std.Build) void {
         .root_module = suite_test_mod,
     });
     test_step.dependOn(&b.addRunArtifact(suite_test).step);
+
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_mod.addImport("zyaml", lib_mod);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "zyaml-bench",
+        .root_module = bench_mod,
+    });
+
+    const bench_step = b.step("bench", "Run benchmarks");
+    const bench_run = b.addRunArtifact(bench_exe);
+    bench_run.step.dependOn(b.getInstallStep());
+    bench_step.dependOn(&bench_run.step);
 }
