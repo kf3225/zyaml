@@ -1613,10 +1613,16 @@ pub const Parser = struct {
         return false;
     }
 
-    fn parseEntryValueAfterColon(self: *Parser, indent: usize, comptime allow_mapping: bool) YamlError!Value {
+    fn parseEntryValueAfterColon(self: *Parser, indent: usize, allow_mapping: bool) YamlError!Value {
         if (self.hasInlineValue()) {
             if (self.isNextAnchorOnOwnLine()) {
                 return self.parseAnchoredValue(indent + 1);
+            }
+            if (!allow_mapping) {
+                const ch = self.scanner.peek() orelse 0;
+                if (ch == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')) {
+                    return YamlError.UnexpectedToken;
+                }
             }
             const value = try self.parseValueWithContext(indent + 2, true);
             if (self.hasTrailingColonOnLine()) {
