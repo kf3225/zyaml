@@ -218,7 +218,7 @@ test "yaml-test-suite" {
 
         var sub_iter = sub_dir.iterate();
         while (try sub_iter.next()) |sub_entry| {
-            if (sub_entry.kind != .directory) continue;
+            if (sub_entry.kind != .directory and sub_entry.kind != .sym_link) continue;
 
             var test_dir = sub_dir.openDir(sub_entry.name, .{}) catch continue;
             defer test_dir.close();
