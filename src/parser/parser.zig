@@ -1430,7 +1430,11 @@ pub const Parser = struct {
         if (self.scanner.peek() == ' ') self.scanner.skip();
         if (self.scanner.peek() == '\t') return YamlError.TabIndentation;
         if (self.hasInlineValue()) {
-            return self.parseValueWithContext(indent + 2, false);
+            const val = try self.parseValueWithContext(indent + 2, true);
+            if (self.hasTrailingColonOnLine()) {
+                return val;
+            }
+            return self.tryAsMappingOrReturn(val, indent, false);
         }
         if (self.scanner.peek() == '#') self.skipInlineComment();
         self.skipNewlines();
@@ -1438,7 +1442,11 @@ pub const Parser = struct {
         const key_indent = self.scanner.countIndentAtLineStart();
         if (key_indent < indent) return .null;
         self.scanner.skipKnownSpaces(key_indent);
-        return self.parseValueWithContext(key_indent, false);
+        const val = try self.parseValueWithContext(key_indent, true);
+        if (self.hasTrailingColonOnLine()) {
+            return val;
+        }
+        return self.tryAsMappingOrReturn(val, indent, false);
     }
 
     fn parseExplicitValuePart(self: *Parser, indent: usize) YamlError!Value {
