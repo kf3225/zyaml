@@ -62,6 +62,22 @@ pub const Parser = struct {
 
         if (self.scanner.peek() == '%') return YamlError.UnexpectedToken;
 
+        if (first_marker and self.scanner.peek() == '&') {
+            var scan = self.scanner.pos;
+            while (scan < self.scanner.source.len) : (scan += 1) {
+                const c = self.scanner.source[scan];
+                if (c == '\n') break;
+                if (c == ':') {
+                    if (scan + 1 < self.scanner.source.len) {
+                        const after = self.scanner.source[scan + 1];
+                        if (after == ' ' or after == '\t' or after == '\n') {
+                            return YamlError.UnexpectedToken;
+                        }
+                    }
+                }
+            }
+        }
+
         if (!self.scanner.isEof()) {
             const ch = self.scanner.peek() orelse return .null;
             if (ch != '[' and ch != '{' and ch != '-' and ch != '?') {
@@ -495,6 +511,22 @@ pub const Parser = struct {
         if (next_ch == '?' and self.scanner.peekAt(next_indent + 1) == ' ') {
             self.scanner.pos = saved_pos;
             return false;
+        }
+        if (self.flow_depth == 0) {
+            var scan = self.scanner.pos + next_indent;
+            while (scan < self.scanner.source.len) : (scan += 1) {
+                const c = self.scanner.source[scan];
+                if (c == '\n') break;
+                if (c == ':') {
+                    if (scan + 1 < self.scanner.source.len) {
+                        const after = self.scanner.source[scan + 1];
+                        if (after == ' ' or after == '\t' or after == '\n') {
+                            self.scanner.pos = saved_pos;
+                            return false;
+                        }
+                    }
+                }
+            }
         }
         self.scanner.skipKnownSpaces(next_indent);
         return true;
@@ -1123,16 +1155,16 @@ pub const Parser = struct {
 
             self.skipFlowWhitespaceAndComments();
             if (self.scanner.peek() == ',') {
-                const saved = self.scanner.pos;
                 self.scanner.skip();
                 self.skipFlowWhitespaceAndComments();
+                if (self.scanner.peek() == ',') return YamlError.UnexpectedToken;
                 if (self.scanner.peek() == ']') {
                     self.scanner.skip();
                     try self.ensureValidAfterFlowClose();
                     self.flow_depth -= 1;
                     return .{ .sequence = seq };
                 }
-                self.scanner.pos = saved;
+                continue;
             } else if (self.scanner.peek() == ']') {
                 self.scanner.skip();
                 try self.ensureValidAfterFlowClose();
@@ -1432,6 +1464,11 @@ pub const Parser = struct {
         if (self.hasInlineValue()) {
             const val = try self.parseValueWithContext(indent + 2, true);
             if (self.hasTrailingColonOnLine()) {
+                const is_inline = self.scanner.pos > 0 and
+                    self.scanner.source[self.scanner.pos - 1] != '\n';
+                if (self.flow_depth == 0 and is_inline) {
+                    return self.buildInlineMappingKey(val, indent);
+                }
                 return val;
             }
             return self.tryAsMappingOrReturn(val, indent, false);
@@ -1444,9 +1481,32 @@ pub const Parser = struct {
         self.scanner.skipKnownSpaces(key_indent);
         const val = try self.parseValueWithContext(key_indent, true);
         if (self.hasTrailingColonOnLine()) {
+            const is_inline = self.scanner.pos > 0 and
+                    self.scanner.source[self.scanner.pos - 1] != '\n';
+            if (self.flow_depth == 0 and is_inline) {
+                return self.buildInlineMappingKey(val, indent);
+            }
             return val;
         }
         return self.tryAsMappingOrReturn(val, indent, false);
+    }
+
+    fn buildInlineMappingKey(self: *Parser, key_val: Value, indent: usize) YamlError!Value {
+        self.scanner.skipWhitespace();
+        std.debug.assert(self.scanner.peek() == ':');
+        self.scanner.skip();
+        self.scanner.skipWhitespace();
+        const inner_val = if (self.hasInlineValue())
+            try self.parseValueWithContext(indent + 2, true)
+        else
+            Value.null;
+        var map = Value.Mapping.init(self.allocator);
+        errdefer self.deinitMappingEntries(&map);
+        const key_str = try self.keyToString(key_val);
+        var kv = key_val;
+        kv.deinit(self.allocator);
+        try map.put(key_str, inner_val);
+        return .{ .mapping = map };
     }
 
     fn parseExplicitValuePart(self: *Parser, indent: usize) YamlError!Value {
@@ -1454,7 +1514,7 @@ pub const Parser = struct {
         self.scanner.skip();
         if (self.scanner.peek() == '\t') return YamlError.TabIndentation;
         self.scanner.skipWhitespace();
-        return self.parseEntryValueAfterColon(indent);
+        return self.parseEntryValueAfterColon(indent, true);
     }
 
     fn parseBlockMapping(self: *Parser, indent: usize) YamlError!Value {
@@ -1504,7 +1564,7 @@ pub const Parser = struct {
         self.scanner.skip();
         self.scanner.skipWhitespace();
 
-        const value = try self.parseEntryValueAfterColon(indent);
+        const value = try self.parseEntryValueAfterColon(indent, false);
         try map.put(key_str, value);
         key_in_map = true;
 
@@ -1553,13 +1613,14 @@ pub const Parser = struct {
         return false;
     }
 
-    fn parseEntryValueAfterColon(self: *Parser, indent: usize) YamlError!Value {
+    fn parseEntryValueAfterColon(self: *Parser, indent: usize, comptime allow_mapping: bool) YamlError!Value {
         if (self.hasInlineValue()) {
             if (self.isNextAnchorOnOwnLine()) {
                 return self.parseAnchoredValue(indent + 1);
             }
             const value = try self.parseValueWithContext(indent + 2, true);
             if (self.hasTrailingColonOnLine()) {
+                if (allow_mapping) return self.tryAsMappingOrReturn(value, indent, false);
                 var v = value;
                 v.deinit(self.allocator);
                 return YamlError.UnexpectedToken;
@@ -1674,7 +1735,7 @@ pub const Parser = struct {
         if (self.scanner.peek() == ':') {
             self.scanner.skip();
             self.scanner.skipWhitespace();
-            val = try self.parseEntryValueAfterColon(indent);
+            val = try self.parseEntryValueAfterColon(indent, false);
         }
 
         if (self.anchors.fetchRemove(anchor_name)) |removed| {
@@ -1698,7 +1759,7 @@ pub const Parser = struct {
         if (next != ' ' and next != '\n' and next != null) return .skip;
         self.scanner.skip();
         self.scanner.skipWhitespace();
-        const colon_val = try self.parseEntryValueAfterColon(indent);
+        const colon_val = try self.parseEntryValueAfterColon(indent, false);
         try map.put(try self.allocator.dupe(u8, ""), colon_val);
         return .consumed;
     }
@@ -1735,7 +1796,7 @@ pub const Parser = struct {
         }
         self.scanner.skip();
         self.scanner.skipWhitespace();
-        const qval = try self.parseEntryValueAfterColon(indent);
+        const qval = try self.parseEntryValueAfterColon(indent, false);
         try map.put(qkey, qval);
         return .consumed;
     }
@@ -1762,13 +1823,14 @@ pub const Parser = struct {
         std.debug.assert(self.scanner.peek() == ':');
         self.scanner.skip();
         self.scanner.skipWhitespace();
-        const val = try self.parseEntryValueAfterColon(indent);
+        const val = try self.parseEntryValueAfterColon(indent, false);
         try map.put(key_str, val);
         return .consumed;
     }
 
     fn tryTaggedKeyEntry(self: *Parser, map: *Value.Mapping, indent: usize) YamlError!EntryAction {
         if (self.scanner.peek() != '!') return .skip;
+        const saved = self.scanner.pos;
         const tagged_val = try self.parseTaggedValue(indent);
         var tv = tagged_val;
         const tkey = try self.keyToString(tv);
@@ -1776,6 +1838,7 @@ pub const Parser = struct {
         self.scanner.skipWhitespace();
         if (self.scanner.peek() != ':') {
             self.allocator.free(tkey);
+            self.scanner.pos = saved;
             return .skip;
         }
         self.scanner.skip();
