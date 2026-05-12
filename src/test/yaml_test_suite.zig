@@ -3,7 +3,7 @@ const zyaml = @import("zyaml");
 
 const SuiteDir = "test-suite/yaml-test-suite";
 
-const skipped = [_][]const u8{"RZT7"};
+const skipped = [_][]const u8{};
 
 fn isSkipped(id: []const u8) bool {
     for (&skipped) |s| {

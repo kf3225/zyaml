@@ -18,6 +18,7 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     scanner: Scanner,
     anchors: std.StringHashMap(Value),
+    building_anchors: std.ArrayList([]const u8),
     depth: usize,
     alias_clone_count: usize,
     flow_depth: usize,
@@ -34,6 +35,7 @@ pub const Parser = struct {
             .allocator = allocator,
             .scanner = Scanner.init(source),
             .anchors = std.StringHashMap(Value).init(allocator),
+            .building_anchors = std.ArrayList([]const u8).init(allocator),
             .depth = 0,
             .alias_clone_count = 0,
             .flow_depth = 0,
@@ -55,6 +57,9 @@ pub const Parser = struct {
             val.deinit(self.allocator);
         }
         self.anchors.deinit();
+        for (self.building_anchors.items) |key| self.allocator.free(key);
+        self.building_anchors.deinit();
+        self.clearTagHandles();
     }
 
     pub fn parse(self: *Parser) YamlError!Value {
@@ -239,9 +244,10 @@ pub const Parser = struct {
     }
 
     fn clearTagHandles(self: *Parser) void {
-        var it = self.tag_handles.keyIterator();
-        while (it.next()) |key| {
-            self.allocator.free(key.*);
+        var it = self.tag_handles.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
         }
         self.tag_handles.clearAndFree();
     }
@@ -324,8 +330,12 @@ pub const Parser = struct {
         const prefix = self.scanner.source[prefix_start..self.scanner.pos];
         if (prefix.len == 0) return YamlError.UnexpectedToken;
         const handle_copy = try self.allocator.dupe(u8, handle);
-        const existing = try self.tag_handles.fetchPut(handle_copy, prefix);
-        if (existing) |e| self.allocator.free(e.key);
+        const prefix_copy = try self.allocator.dupe(u8, prefix);
+        const existing = try self.tag_handles.fetchPut(handle_copy, prefix_copy);
+        if (existing) |e| {
+            self.allocator.free(e.key);
+            self.allocator.free(e.value);
+        }
     }
 
     fn skipDocumentStart(self: *Parser) bool {
@@ -409,8 +419,17 @@ pub const Parser = struct {
 
     fn tryScalarAsMappingKey(self: *Parser, scalar: Value, indent: usize, in_mapping_value: bool) YamlError!?Value {
         if (in_mapping_value) return null;
+        const saved_pos = self.scanner.pos;
+        const saved_column = self.scanner.column;
+        const at_line_start = saved_pos == self.scanner.line_start;
         self.scanner.skipWhitespace();
-        if (self.scanner.peek() != ':') return null;
+        if (self.scanner.peek() != ':') {
+            if (at_line_start) {
+                self.scanner.pos = saved_pos;
+                self.scanner.column = saved_column;
+            }
+            return null;
+        }
         switch (scalar) {
             .sequence, .mapping => {
                 if (self.flow_depth == 0 and self.scanner.line != self.flow_start_line) return YamlError.UnexpectedToken;
@@ -1074,6 +1093,7 @@ pub const Parser = struct {
         while (!self.scanner.isEof()) {
             const line_indent = self.scanner.countLeadingSpaces();
             const pre_skip = self.scanner.pos;
+            const pre_column = self.scanner.column;
             const tab_pos = self.scanner.pos + line_indent;
             const tab_content = tab_pos < self.scanner.source.len and self.scanner.source[tab_pos] == '\t';
             if (indent_detected and line_indent > content_indent) {
@@ -1135,6 +1155,7 @@ pub const Parser = struct {
                 }
             } else if (line_indent < content_indent) {
                 self.scanner.pos = pre_skip;
+                self.scanner.column = pre_column;
                 break;
             }
 
@@ -1772,7 +1793,10 @@ pub const Parser = struct {
                         while (anchor_it.next()) |entry| {
                             if (entry.value_ptr.* == .null) {
                                 const name = try self.allocator.dupe(u8, entry.key_ptr.*);
-                                _ = self.anchors.fetchRemove(entry.key_ptr.*);
+                                const removed = self.anchors.fetchRemove(entry.key_ptr.*) orelse unreachable;
+                                self.allocator.free(removed.key);
+                                var rv = removed.value;
+                                rv.deinit(self.allocator);
                                 const cloned = try seq.deepClone(self.allocator);
                                 try self.anchors.put(name, cloned);
                                 break;
@@ -2107,6 +2131,14 @@ pub const Parser = struct {
 
         if (after_anchor == '-' and (self.scanner.peekAt(1) == ' ' or self.scanner.peekAt(1) == '\t' or self.scanner.peekAt(1) == '\n')) return YamlError.UnexpectedToken;
 
+        const anchor_copy = try self.allocator.dupe(u8, anchor);
+        try self.building_anchors.append(anchor_copy);
+        const building_idx = self.building_anchors.items.len - 1;
+        errdefer {
+            _ = self.building_anchors.pop();
+            self.allocator.free(anchor_copy);
+        }
+
         if (after_anchor == '#') {
             self.scanner.skipLine();
         }
@@ -2135,6 +2167,8 @@ pub const Parser = struct {
             cv.deinit(self.allocator);
         }
         try self.anchors.put(anchor, cloned);
+        _ = self.building_anchors.swapRemove(building_idx);
+        self.allocator.free(anchor_copy);
 
         return value;
     }
@@ -2145,6 +2179,12 @@ pub const Parser = struct {
 
         const anchor = try self.readAnchorName();
         defer self.allocator.free(anchor);
+
+        for (self.building_anchors.items) |name| {
+            if (std.mem.eql(u8, anchor, name)) {
+                return .{ .sequence = Value.Sequence.init(self.allocator) };
+            }
+        }
 
         if (self.anchors.get(anchor)) |value| {
             if (self.alias_clone_count >= MAX_ALIAS_CLONES) return YamlError.InvalidDocument;
