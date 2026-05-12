@@ -12,9 +12,7 @@ const cases = [_]yaml_spec.TestCase{
         .name = "X02: scalar_with_colon",
         .input = "a: b: c",
         .spec_ref = "7.3.3",
-        .expected = yaml_spec.ok(yaml_spec.map(&.{
-            .{ .key = "a", .value = yaml_spec.s("b: c") },
-        })),
+        .expected = yaml_spec.e(.unexpected_token, 0, 0),
     },
     .{
         .name = "X03: unicode_key",
