@@ -38,11 +38,13 @@ pub const Value = union(enum) {
         if (s.len == 0) return false;
         const first = s[0];
         var start: usize = 0;
-        if (first == '+' or first == '-') {
-            if (s.len == 1) return false;
-            start = 1;
-        } else if (first < '0' or first > '9') {
-            if (first != '.') return false;
+        switch (first) {
+            '+', '-' => {
+                if (s.len == 1) return false;
+                start = 1;
+            },
+            '0'...'9', '.' => {},
+            else => return false,
         }
         var seen_dot = first == '.';
         var seen_e = false;
@@ -135,12 +137,11 @@ pub const Value = union(enum) {
     fn resolvePrefixedInt(str: []const u8) ?Value {
         if (str.len < 3) return null;
         const second = str[1];
-        if (second == 'x' or second == 'X') {
-            if (std.fmt.parseInt(i64, str[2..], 16)) |i| return .{ .integer = i } else |_| {}
-        } else if (second == 'o' or second == 'O') {
-            if (std.fmt.parseInt(i64, str[2..], 8)) |i| return .{ .integer = i } else |_| {}
-        } else if (second == 'b' or second == 'B') {
-            if (std.fmt.parseInt(i64, str[2..], 2)) |i| return .{ .integer = i } else |_| {}
+        switch (second) {
+            'x', 'X' => if (std.fmt.parseInt(i64, str[2..], 16)) |i| return .{ .integer = i } else |_| {},
+            'o', 'O' => if (std.fmt.parseInt(i64, str[2..], 8)) |i| return .{ .integer = i } else |_| {},
+            'b', 'B' => if (std.fmt.parseInt(i64, str[2..], 2)) |i| return .{ .integer = i } else |_| {},
+            else => {},
         }
         return null;
     }
@@ -191,23 +192,25 @@ pub const Value = union(enum) {
         }
     }
 
-    pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
-        switch (self.*) {
+    pub fn deinit(self: Value, allocator: std.mem.Allocator) void {
+        switch (self) {
             .null, .boolean, .integer, .float => {},
             .string => |s| allocator.free(s),
-            .sequence => |*seq| {
-                for (seq.items) |*item| {
+            .sequence => |seq| {
+                for (seq.items) |item| {
                     item.deinit(allocator);
                 }
-                seq.deinit();
+                var mut = seq;
+                mut.deinit();
             },
-            .mapping => |*map| {
+            .mapping => |map| {
                 var iter = map.iterator();
                 while (iter.next()) |entry| {
                     allocator.free(entry.key_ptr.*);
-                    entry.value_ptr.deinit(allocator);
+                    entry.value_ptr.*.deinit(allocator);
                 }
-                map.deinit();
+                var mut = map;
+                mut.deinit();
             },
         }
     }

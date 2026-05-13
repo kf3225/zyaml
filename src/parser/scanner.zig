@@ -1,5 +1,5 @@
 const std = @import("std");
-const YamlError = @import("../error.zig").YamlError;
+const Token = @import("token.zig").Token;
 
 pub const Scanner = struct {
     source: []const u8,
@@ -18,15 +18,15 @@ pub const Scanner = struct {
         };
     }
 
-    pub fn peek(self: Scanner) ?u8 {
-        if (self.pos >= self.source.len) return null;
-        return self.source[self.pos];
+    pub fn peek(self: Scanner) Token {
+        if (self.pos >= self.source.len) return .eof;
+        return Token.from(self.source[self.pos]);
     }
 
-    pub fn peekAt(self: Scanner, offset: usize) ?u8 {
-        const idx = std.math.add(usize, self.pos, offset) catch return null;
-        if (idx >= self.source.len) return null;
-        return self.source[idx];
+    pub fn peekTokenAt(self: Scanner, offset: usize) Token {
+        const idx = std.math.add(usize, self.pos, offset) catch return .eof;
+        if (idx >= self.source.len) return .eof;
+        return Token.from(self.source[idx]);
     }
 
     pub fn advance(self: *Scanner) ?u8 {
@@ -149,12 +149,10 @@ pub const Scanner = struct {
     pub fn hasTabAsLeadingIndent(self: Scanner) bool {
         var pos = self.lineStartOffset();
         while (pos < self.source.len) : (pos += 1) {
-            if (self.source[pos] == ' ') {
-                continue;
-            } else if (self.source[pos] == '\t') {
-                return true;
-            } else {
-                break;
+            switch (self.source[pos]) {
+                ' ' => continue,
+                '\t' => return true,
+                else => break,
             }
         }
         return false;

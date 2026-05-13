@@ -93,19 +93,32 @@ fn parseMultiDocJson(allocator: std.mem.Allocator, json_raw: []const u8) !?zyaml
                 line_end += 1;
                 continue;
             }
-            if (c == '"') { in_str = true; line_end += 1; continue; }
+            if (c == '"') {
+                in_str = true;
+                line_end += 1;
+                continue;
+            }
             if (c == '{' or c == '[') str_depth += 1;
             if (c == '}' or c == ']') {
                 if (str_depth == 0) break;
                 str_depth -= 1;
-                if (str_depth == 0) { line_end += 1; break; }
+                if (str_depth == 0) {
+                    line_end += 1;
+                    break;
+                }
             }
             if (c == '\n' and str_depth == 0) break;
             line_end += 1;
         }
-        if (line_start >= line_end) { line_start = line_end + 1; continue; }
+        if (line_start >= line_end) {
+            line_start = line_end + 1;
+            continue;
+        }
         const chunk = std.mem.trim(u8, json_raw[line_start..line_end], " \t\r\n");
-        if (chunk.len == 0) { line_start = line_end + 1; continue; }
+        if (chunk.len == 0) {
+            line_start = line_end + 1;
+            continue;
+        }
         const doc = try zyaml.parse(allocator, chunk);
         try seq.append(doc);
         line_start = line_end + 1;
@@ -149,17 +162,15 @@ fn runTest(allocator: std.mem.Allocator, test_dir: std.fs.Dir, id: []const u8, l
                 return .pass;
             }
             const json_parsed = zyaml.parse(allocator, json_raw) catch null;
-            var jsonv = json_parsed;
-            defer if (json_parsed != null) jsonv.?.deinit(allocator);
-            if (json_parsed != null and valuesEqual(result, jsonv.?)) {
+            defer if (json_parsed) |jv| jv.deinit(allocator);
+            if (json_parsed != null and valuesEqual(result, json_parsed.?)) {
                 log.writer().print("{s} OK\n", .{id}) catch {};
                 return .pass;
             }
             const multi = parseMultiDocJson(allocator, json_raw) catch null;
             if (multi != null) {
                 defer {
-                    var m = multi.?;
-                    m.deinit(allocator);
+                    multi.?.deinit(allocator);
                 }
                 if (valuesEqual(result, multi.?)) {
                     log.writer().print("{s} OK\n", .{id}) catch {};
@@ -168,7 +179,7 @@ fn runTest(allocator: std.mem.Allocator, test_dir: std.fs.Dir, id: []const u8, l
             }
             const actual = zyaml.stringify(allocator, result) catch "??";
             defer if (std.mem.eql(u8, actual, "??")) {} else allocator.free(actual);
-            const expected = if (json_parsed != null) zyaml.stringify(allocator, jsonv.?) catch "??" else json_raw;
+            const expected = if (json_parsed) |jv| zyaml.stringify(allocator, jv) catch "??" else json_raw;
             defer if (json_parsed != null and !std.mem.eql(u8, expected, "??") and !std.mem.eql(u8, expected, json_raw)) allocator.free(expected);
             log.writer().print("{s} FAIL(diff)\n  actual:   {s}\n  expected: {s}\n", .{ id, actual, expected }) catch {};
             return .fail;

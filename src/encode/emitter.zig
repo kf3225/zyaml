@@ -51,14 +51,16 @@ pub const Emitter = struct {
     fn emitFloat(self: *Emitter, f: f64) EmitError!void {
         if (std.math.isNan(f)) {
             try self.writer.writeAll(".nan");
-        } else if (std.math.isInf(f)) {
-            try self.writer.writeAll(if (f < 0) "-.inf" else ".inf");
-        } else {
-            var buf: [64]u8 = undefined;
-            // decimal mode avoids scientific notation for typical YAML floats
-        const str = std.fmt.formatFloat(&buf, f, .{ .mode = .decimal }) catch "0.0";
-            try self.writer.writeAll(str);
+            return;
         }
+        if (std.math.isInf(f)) {
+            try self.writer.writeAll(if (f < 0) "-.inf" else ".inf");
+            return;
+        }
+        var buf: [64]u8 = undefined;
+        // decimal mode avoids scientific notation for typical YAML floats
+        const str = std.fmt.formatFloat(&buf, f, .{ .mode = .decimal }) catch "0.0";
+        try self.writer.writeAll(str);
     }
 
     fn emitString(self: *Emitter, s: []const u8) EmitError!void {

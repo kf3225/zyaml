@@ -421,13 +421,15 @@ fn valueToJsonDepth(v: *const Value, buf: *std.ArrayList(u8), depth: usize) Json
 fn writeJsonFloat(buf: *std.ArrayList(u8), f: f64) JsonWriteError!void {
     if (std.math.isNan(f)) {
         try buf.appendSlice("null");
-    } else if (std.math.isInf(f)) {
-        if (f > 0) try buf.appendSlice("1e999") else try buf.appendSlice("-1e999");
-    } else {
-        var tmp: [64]u8 = undefined;
-        const str = std.fmt.formatFloat(&tmp, f, .{}) catch "null";
-        try buf.appendSlice(str);
+        return;
     }
+    if (std.math.isInf(f)) {
+        if (f > 0) try buf.appendSlice("1e999") else try buf.appendSlice("-1e999");
+        return;
+    }
+    var tmp: [64]u8 = undefined;
+    const str = std.fmt.formatFloat(&tmp, f, .{}) catch "null";
+    try buf.appendSlice(str);
 }
 
 const JsonWriteError = std.mem.Allocator.Error;

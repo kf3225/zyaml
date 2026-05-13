@@ -20,3 +20,8 @@ repos:
         entry: uv run ty check python/zyaml/__init__.py
         language: system
         pass_filenames: false
+      - id: zig-fmt
+        name: zig fmt
+        entry: zig fmt --check
+        language: system
+        files: \.zig$
