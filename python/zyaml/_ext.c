@@ -5,6 +5,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#if PY_VERSION_HEX < 0x030a0000
+static inline PyObject *Py_NewRef(PyObject *obj) {
+    Py_INCREF(obj);
+    return obj;
+}
+#endif
+
 #ifdef __linux__
 __attribute__((visibility("default"))) void __zig_probe_stack(uintptr_t stack) {
     volatile char *p = (volatile char *)stack;
