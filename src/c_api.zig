@@ -88,12 +88,36 @@ fn freeNullTerminated(s: ?[*:0]u8) void {
     }
 }
 
+fn normalizeNewlines(allocator: Allocator, source: []const u8) Allocator.Error![]const u8 {
+    if (std.mem.indexOfScalar(u8, source, '\r') == null) return source;
+    var buf = try allocator.alloc(u8, source.len);
+    var len: usize = 0;
+    var i: usize = 0;
+    while (i < source.len) {
+        if (source[i] == '\r') {
+            buf[len] = '\n';
+            len += 1;
+            if (i + 1 < source.len and source[i + 1] == '\n') i += 2 else i += 1;
+        } else {
+            buf[len] = source[i];
+            len += 1;
+            i += 1;
+        }
+    }
+    return buf[0..len];
+}
+
 fn parseWithArena(source: []const u8, error_context: ?[]const u8) ?*YamlValueOpaque {
     const arena_ptr = c_alloc.create(std.heap.ArenaAllocator) catch @panic("out of memory");
     arena_ptr.* = std.heap.ArenaAllocator.init(c_alloc);
     const arena_alloc = arena_ptr.allocator();
 
-    var parser = Parser.init(arena_alloc, source);
+    const normalized = normalizeNewlines(arena_alloc, source) catch {
+        arena_ptr.deinit();
+        c_alloc.destroy(arena_ptr);
+        return null;
+    };
+    var parser = Parser.init(arena_alloc, normalized);
     const value = parser.parse() catch |err| {
         parser.deinit();
         arena_ptr.deinit();

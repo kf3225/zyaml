@@ -35,6 +35,8 @@ jobs:
       - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.14.0
+      - run: zig build
+        if: runner.os != 'Linux'
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -43,12 +45,12 @@ jobs:
       - run: pip install cibuildwheel
       - run: cibuildwheel
         env:
-          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_BEFORE_BUILD_LINUX: >
-            curl -L https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz
-            | tar -xJ -C /tmp
+            curl -L https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz -o /tmp/zig.tar.xz
+            && tar -xJ -C /tmp -f /tmp/zig.tar.xz
             && export PATH="/tmp/zig-linux-$(uname -m)-0.14.0:$PATH"
             && zig build
           CIBW_BEFORE_BUILD_MACOS: zig build
