@@ -3,22 +3,22 @@ name = "zyaml"
 version = "0.1.0"
 description = "Python bindings for zyaml (YAML 1.2.2 parser in Zig)"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.9"
 dependencies = []
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.6.0; python_version >= '3.10'",
     "pytest>=8",
     "ruff>=0.11",
-    "ty>=0.0.31",
+    "ty>=0.0.1; python_version >= '3.10'",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py39"
 line-length = 100
 
 [build-system]
