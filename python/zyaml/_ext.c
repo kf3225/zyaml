@@ -5,6 +5,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __linux__
+__attribute__((visibility("default"))) void __zig_probe_stack(uintptr_t stack) {
+    volatile char *p = (volatile char *)stack;
+    *p;
+}
+#endif
+
 typedef enum {
     ZYAML_NULL = 0, ZYAML_BOOLEAN = 1, ZYAML_INTEGER = 2, ZYAML_FLOAT = 3,
     ZYAML_STRING = 4, ZYAML_SEQUENCE = 5, ZYAML_MAPPING = 6,
