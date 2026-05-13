@@ -6,7 +6,7 @@ zyaml_dir = os.path.dirname(os.path.abspath(__file__))
 
 if sys.platform == "win32":
     static_lib = os.path.join(zyaml_dir, "zig-out", "lib", "zyaml_c.lib")
-    extra_link_args = []
+    extra_link_args = ["ntdll.lib"]
 else:
     static_lib = os.path.join(zyaml_dir, "zig-out", "lib", "libzyaml_c.a")
     extra_link_args = ["-lc"]

@@ -19,6 +19,12 @@ __attribute__((visibility("default"))) void __zig_probe_stack(uintptr_t stack) {
 }
 #endif
 
+#ifdef _WIN32
+#pragma comment(linker, "/ALTERNATENAME:___chkstk_ms=__chkstk")
+uintptr_t __stack_chk_guard = 0;
+void __stack_chk_fail(void) {}
+#endif
+
 typedef enum {
     ZYAML_NULL = 0, ZYAML_BOOLEAN = 1, ZYAML_INTEGER = 2, ZYAML_FLOAT = 3,
     ZYAML_STRING = 4, ZYAML_SEQUENCE = 5, ZYAML_MAPPING = 6,
