@@ -1,5 +1,6 @@
 const std = @import("std");
 const Value = @import("../ast/value.zig").Value;
+const Token = @import("../parser/token.zig").Token;
 
 pub const FlowStyle = enum {
     block,
@@ -71,27 +72,44 @@ pub const Emitter = struct {
         try self.emitSingleQuoted(s);
     }
 
-    const needs_quote_first = blk: {
-        var table: [256]bool = @splat(false);
-        for ("-?:,[]{}#&*!%@`\"'|>") |ch| table[ch] = true;
-        break :blk table;
-    };
+    fn needsQuoteTokenAtStart(tok: Token) bool {
+        return switch (tok) {
+            .dash,
+            .question,
+            .colon,
+            .comma,
+            .open_bracket,
+            .close_bracket,
+            .open_brace,
+            .close_brace,
+            .hash,
+            .ampersand,
+            .asterisk,
+            .bang,
+            .percent,
+            .double_quote,
+            .single_quote,
+            .pipe,
+            .greater,
+            => true,
+            else => false,
+        };
+    }
 
-    const needs_quote_any = blk: {
-        var table: [256]bool = @splat(false);
-        table[':'] = true;
-        table['#'] = true;
-        table['\n'] = true;
-        break :blk table;
-    };
+    fn needsQuoteAnywhere(tok: Token) bool {
+        return switch (tok) {
+            .colon, .hash, .newline => true,
+            else => false,
+        };
+    }
 
     fn needsQuoting(s: []const u8) bool {
         if (s.len == 0) return true;
         const first = s[0];
         if (first == ' ' or s[s.len - 1] == ' ') return true;
-        if (needs_quote_first[first]) return true;
+        if (needsQuoteTokenAtStart(Token.from(first)) or first == '@' or first == '`') return true;
         for (s) |ch| {
-            if (needs_quote_any[ch]) return true;
+            if (needsQuoteAnywhere(Token.from(ch))) return true;
         }
         if (Value.isReservedWord(s)) return true;
         if (Value.looksLikeNumber(s)) return true;

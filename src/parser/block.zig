@@ -46,7 +46,7 @@ pub fn handleBlockScalarEof(ctx: *scalar_mod.BlockScalarCtx, result: *std.ArrayL
     return true;
 }
 
-pub fn handleBlockScalarBlankLine(parser: *Parser, ctx: *scalar_mod.BlockScalarCtx, result: *std.ArrayList(u8), line_indent: usize) void {
+pub fn handleBlockScalarBlankLine(parser: *Parser, ctx: *scalar_mod.BlockScalarCtx, result: *std.ArrayList(u8), line_indent: usize) YamlError!void {
     parser.scanner.skip();
     if (!ctx.indent_detected) {
         ctx.trailing_newlines += 1;
@@ -54,9 +54,9 @@ pub fn handleBlockScalarBlankLine(parser: *Parser, ctx: *scalar_mod.BlockScalarC
         return;
     }
     if (line_indent > ctx.content_indent) {
-        if (!ctx.first_content) result.appendNTimes('\n', ctx.trailing_newlines + 1) catch {};
+        if (!ctx.first_content) try result.appendNTimes('\n', ctx.trailing_newlines + 1);
         ctx.trailing_newlines = 0;
-        result.appendNTimes(' ', line_indent - ctx.content_indent) catch {};
+        try result.appendNTimes(' ', line_indent - ctx.content_indent);
         ctx.first_content = false;
         return;
     }
@@ -200,7 +200,7 @@ pub fn parseBlockScalar(parser: *Parser, parent_indent: usize) YamlError!Value {
             }
         }
         if (parser.scanner.peek() == .newline) {
-            handleBlockScalarBlankLine(parser, &ctx, &result, line_indent);
+            try handleBlockScalarBlankLine(parser, &ctx, &result, line_indent);
             continue;
         }
 

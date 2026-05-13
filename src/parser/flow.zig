@@ -94,16 +94,34 @@ pub fn handleFlowSeqComma(parser: *Parser, seq: Value.Sequence) YamlError!?Value
     return tryCloseFlowSeq(parser, seq);
 }
 
-pub fn putFlowMapEntry(parser: *Parser, map: *Value.Mapping, key_str: []const u8, value: Value) YamlError!void {
-    if (map.fetchSwapRemove(key_str)) |old| {
-        parser.allocator.free(old.key);
-        old.value.deinit(parser.allocator);
+fn isScalarKey(key_val: Value) bool {
+    return switch (key_val) {
+        .sequence, .mapping => false,
+        else => true,
+    };
+}
+
+pub fn putFlowMapEntry(parser: *Parser, map: *Value.Mapping, key_str: []const u8, value: Value, reject_duplicate: bool) YamlError!void {
+    if (!reject_duplicate) {
+        if (map.fetchSwapRemove(key_str)) |old| {
+            parser.allocator.free(old.key);
+            old.value.deinit(parser.allocator);
+        }
+        try map.put(key_str, value);
+        return;
     }
-    try map.put(key_str, value);
+    const gop = try map.getOrPut(key_str);
+    if (gop.found_existing) {
+        parser.allocator.free(key_str);
+        value.deinit(parser.allocator);
+        return YamlError.DuplicateKey;
+    }
+    gop.value_ptr.* = value;
 }
 
 pub fn parseFlowMappingEntry(parser: *Parser, map: *Value.Mapping) YamlError!void {
     const key_val = try parseFlowKey(parser);
+    const reject_duplicate = isScalarKey(key_val);
     const key_str = try parser.keyToString(key_val);
     key_val.deinit(parser.allocator);
 
@@ -111,7 +129,7 @@ pub fn parseFlowMappingEntry(parser: *Parser, map: *Value.Mapping) YamlError!voi
 
     const tok = parser.scanner.peek();
     if (tok == .comma or tok == .close_brace) {
-        try putFlowMapEntry(parser, map, key_str, .null);
+        try putFlowMapEntry(parser, map, key_str, .null, reject_duplicate);
         return;
     }
     if (tok != .colon) {
@@ -127,7 +145,7 @@ pub fn parseFlowMappingEntry(parser: *Parser, map: *Value.Mapping) YamlError!voi
     else
         .null;
 
-    try putFlowMapEntry(parser, map, key_str, value);
+    try putFlowMapEntry(parser, map, key_str, value, reject_duplicate);
 }
 
 pub fn parseFlowSequence(parser: *Parser) YamlError!Value {

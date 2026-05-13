@@ -1,5 +1,6 @@
 const std = @import("std");
 const zyaml = @import("root.zig");
+const Token = zyaml.Token;
 const Value = zyaml.YamlValue;
 const Parser = zyaml.YamlParser;
 
@@ -310,12 +311,6 @@ export fn zyaml_stringify(value: ?*YamlValueOpaque) ?[*:0]const u8 {
     return null;
 }
 
-export fn zyaml_free_string_buf(s: ?[*]u8, len: usize) void {
-    if (s) |ptr| {
-        c_alloc.free(ptr[0..len]);
-    }
-}
-
 export fn zyaml_to_json(value: ?*YamlValueOpaque, out_len: *usize) ?[*:0]const u8 {
     out_len.* = 0;
     if (toValue(value)) |v| {
@@ -336,56 +331,43 @@ export fn zyaml_to_json(value: ?*YamlValueOpaque, out_len: *usize) ?[*:0]const u
     return null;
 }
 
-const json_escape_map = blk: {
-    var table: [256]?[]const u8 = @splat(null);
-    table['"'] = "\\\"";
-    table['\\'] = "\\\\";
-    table['\n'] = "\\n";
-    table['\r'] = "\\r";
-    table['\t'] = "\\t";
-    break :blk table;
-};
+fn jsonEscapeSlice(tok: Token) ?[]const u8 {
+    return switch (tok) {
+        .double_quote => "\\\"",
+        .backslash => "\\\\",
+        .newline => "\\n",
+        .cr => "\\r",
+        .tab => "\\t",
+        else => null,
+    };
+}
 
-const hex_nibbles = blk: {
-    var table: [256][2]u8 = undefined;
-    const hex = "0123456789abcdef";
-    for (&table, 0..) |*entry, i| {
-        entry.* = .{ hex[i >> 4], hex[i & 0xf] };
-    }
-    break :blk table;
-};
+fn hexDigit(n: u8) u8 {
+    return if (n < 10) '0' + n else 'a' + (n - 10);
+}
 
 fn writeJsonEscapedChar(buf: *std.ArrayList(u8), ch: u8) JsonWriteError!void {
-    if (json_escape_map[ch]) |escaped| {
+    if (jsonEscapeSlice(Token.from(ch))) |escaped| {
         try buf.appendSlice(escaped);
         return;
     }
     if (ch < 0x20 or ch == 0x7F or (ch >= 0x80 and ch < 0xC0)) {
+        const escaped = [_]u8{ hexDigit(ch >> 4), hexDigit(ch & 0x0F) };
         try buf.appendSlice("\\u00");
-        try buf.appendSlice(&hex_nibbles[ch]);
+        try buf.appendSlice(&escaped);
     } else {
         try buf.append(ch);
     }
 }
 
-const json_needs_escape = blk: {
-    var table: [256]bool = @splat(false);
-    table['"'] = true;
-    table['\\'] = true;
-    table['\n'] = true;
-    table['\r'] = true;
-    table['\t'] = true;
-    for (0..0x20) |i| table[i] = true;
-    table[0x7F] = true;
-    for (0x80..0xC0) |i| table[i] = true;
-    break :blk table;
-};
-
 fn writeJsonString(buf: *std.ArrayList(u8), s: []const u8) JsonWriteError!void {
     try buf.append('"');
     var start: usize = 0;
     for (s, 0..) |ch, i| {
-        if (json_needs_escape[ch]) {
+        const tok = Token.from(ch);
+        const needs_escape = jsonEscapeSlice(tok) != null or
+            ch < 0x20 or ch == 0x7F or (ch >= 0x80 and ch < 0xC0);
+        if (needs_escape) {
             if (i > start) try buf.appendSlice(s[start..i]);
             try writeJsonEscapedChar(buf, ch);
             start = i + 1;

@@ -15,6 +15,12 @@ const cases = [_]yaml_spec.TestCase{
         .expected = yaml_spec.e(.duplicate_key, 2, 1),
     },
     .{
+        .name = "ER02b: duplicate_flow_key",
+        .input = "{a: 1, a: 2}",
+        .spec_ref = "3.2.1.3",
+        .expected = yaml_spec.e(.duplicate_key, 1, 8),
+    },
+    .{
         .name = "ER03: unknown_alias",
         .input = "*unknown",
         .spec_ref = "3.2.2.2",

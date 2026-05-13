@@ -70,6 +70,11 @@ def test_parse_error():
         zyaml.safe_load("\tindented: wrong")
 
 
+def test_duplicate_flow_key_error():
+    with pytest.raises(zyaml.YAMLError):
+        zyaml.safe_load("{a: 1, a: 2}")
+
+
 def test_keys_items():
     doc = zyaml.parse("a: 1\nb: 2\nc: 3")
     keys = doc.keys()

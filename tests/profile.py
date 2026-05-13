@@ -21,7 +21,7 @@ def bench(label, fn, iters=ITERS):
 
 content = "name: Alice\nage: 30\ncity: Tokyo\n"
 encoded = content.encode("utf-8")
-lib = zyaml._lib
+lib = zyaml._get_lib()
 
 print(f"=== Micro-benchmark: small mapping ({ITERS} iters) ===")
 print()

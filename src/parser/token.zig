@@ -83,14 +83,14 @@ pub const Token = enum {
 
     pub fn isAnchorTerminator(self: Token) bool {
         return switch (self) {
-            .space, .tab, .newline, .cr, .comma, .open_bracket, .close_bracket, .open_brace, .close_brace => true,
+            .eof, .space, .tab, .newline, .cr, .comma, .open_bracket, .close_bracket, .open_brace, .close_brace => true,
             else => false,
         };
     }
 
     pub fn isTagTerminator(self: Token) bool {
         return switch (self) {
-            .space, .newline, .comma, .close_brace, .close_bracket => true,
+            .eof, .space, .newline, .comma, .close_brace, .close_bracket => true,
             else => false,
         };
     }

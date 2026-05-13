@@ -5,6 +5,7 @@ const Value = @import("ast/value.zig").Value;
 pub const YamlValue = Value;
 pub const YamlParser = Parser;
 pub const YamlError = @import("error.zig").YamlError;
+pub const Token = @import("parser/token.zig").Token;
 
 pub const ast = @import("ast/mod.zig");
 pub const parser = @import("parser/mod.zig");

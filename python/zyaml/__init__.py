@@ -224,6 +224,8 @@ def _setup_value_api(lib: ctypes.CDLL) -> None:
     lib.zyaml_as_float.restype = ctypes.c_double
     lib.zyaml_as_string.argtypes = [ctypes.c_void_p]
     lib.zyaml_as_string.restype = ctypes.c_void_p
+    lib.zyaml_as_string_borrow.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+    lib.zyaml_as_string_borrow.restype = ctypes.c_void_p
     lib.zyaml_free_string.argtypes = [ctypes.c_void_p]
     lib.zyaml_free_string.restype = None
 
@@ -260,6 +262,8 @@ def _setup_string_api(lib: ctypes.CDLL) -> None:
     lib.zyaml_to_json.restype = ctypes.c_void_p
     lib.zyaml_free_json.argtypes = [ctypes.c_void_p]
     lib.zyaml_free_json.restype = None
+    lib.zyaml_free_cstr.argtypes = [ctypes.c_void_p]
+    lib.zyaml_free_cstr.restype = None
 
 
 _lib: ctypes.CDLL | None = None
@@ -286,16 +290,30 @@ def _read_cstr(ptr) -> str:
     return ctypes.string_at(addr).decode("utf-8")
 
 
+def _read_owned_cstr(ptr, free_func) -> str:
+    try:
+        return _read_cstr(ptr)
+    finally:
+        if ptr:
+            free_func(ptr)
+
+
 def _read_borrowed(ptr: int, length: int) -> str:
     if length == 0:
         return ""
     return ctypes.string_at(ptr, length).decode("utf-8")
 
 
+def _value_string_borrowed(ptr: int) -> str:
+    out_len = ctypes.c_size_t(0)
+    sp = _get_lib().zyaml_as_string_borrow(ptr, ctypes.byref(out_len))
+    return _read_borrowed(sp, out_len.value)
+
+
 def _value_to_python(ptr: int) -> Any:
     t = _get_lib().zyaml_type(ptr)
     if t == YamlType.STRING:
-        return _read_cstr(_get_lib().zyaml_as_string(ptr))
+        return _value_string_borrowed(ptr)
     if t == YamlType.SEQUENCE:
         return _seq_to_python(ptr)
     if t == YamlType.MAPPING:
@@ -637,15 +655,18 @@ def add_path_resolver(tag, path, kind=None, Loader=None, Dumper=None):
 
 
 class YamlValue:
-    __slots__ = ("_ptr",)
+    __slots__ = ("_owned", "_owner", "_ptr")
 
-    def __init__(self, ptr: int):
+    def __init__(self, ptr: int, *, owner: "YamlValue | None" = None, owned: bool = True):
         self._ptr = ptr
+        self._owner = owner
+        self._owned = owned
 
     def __del__(self):
-        if self._ptr:
+        if self._ptr and self._owned:
             _get_lib().zyaml_free(self._ptr)
-            self._ptr = 0
+        self._ptr = 0
+        self._owner = None
 
     def __enter__(self):
         return self
@@ -675,17 +696,17 @@ class YamlValue:
         raise TypeError(f"Cannot index {self.type.name} with {type(key).__name__}")
 
     def _get_seq_item(self, index: int) -> "YamlValue":
-        ptr = _get_lib().zyaml_sequence_get(self._ptr, index)
+        ptr = _get_lib().zyaml_sequence_get_borrow(self._ptr, index)
         if not ptr:
             raise IndexError(index)
-        return YamlValue(ptr)
+        return YamlValue(ptr, owner=self, owned=False)
 
     def _get_map_item(self, key: str) -> "YamlValue":
         encoded = key.encode("utf-8")
-        ptr = _get_lib().zyaml_mapping_get(self._ptr, encoded, len(encoded))
+        ptr = _get_lib().zyaml_mapping_get_borrow(self._ptr, encoded, len(encoded))
         if not ptr:
             raise KeyError(key)
-        return YamlValue(ptr)
+        return YamlValue(ptr, owner=self, owned=False)
 
     def __contains__(self, key: Union[int, str]) -> bool:
         if isinstance(key, str):
@@ -720,7 +741,8 @@ class YamlValue:
             return default
 
     def stringify(self) -> str:
-        return _read_cstr(_get_lib().zyaml_stringify(self._ptr))
+        ptr = _get_lib().zyaml_stringify(self._ptr)
+        return _read_owned_cstr(ptr, _get_lib().zyaml_free_cstr)
 
     def __repr__(self) -> str:
         t = self.type
@@ -733,7 +755,7 @@ class YamlValue:
         if t == YamlType.FLOAT:
             return f"YamlValue(float={_get_lib().zyaml_as_float(self._ptr)})"
         if t == YamlType.STRING:
-            return f"YamlValue(string={_read_cstr(_get_lib().zyaml_as_string(self._ptr))!r})"
+            return f"YamlValue(string={_value_string_borrowed(self._ptr)!r})"
         if t == YamlType.SEQUENCE:
             return f"YamlValue(sequence, len={len(self)})"
         if t == YamlType.MAPPING:

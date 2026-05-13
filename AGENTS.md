@@ -9,11 +9,11 @@ A native Zig YAML 1.2.2 parser library with Python bindings providing a PyYAML-c
 ```bash
 # Zig
 zig build              # Build
-zig build test         # Zig tests (58/58, 0 leaked, 0 segfaults)
+zig build test         # Zig tests (41/41 + yaml-test-suite 1954/1954)
 
 # Python (requires: eval "$(mise activate bash)")
 uv pip install -e .    # Editable install with C extension
-uv run pytest tests/   # Python tests (121/121)
+uv run pytest tests/   # Python tests (122/122)
 uv run ty check python/zyaml/__init__.py  # Type check
 uv run ruff check python/zyaml/           # Lint
 ```
@@ -83,9 +83,11 @@ Zig standard library only
 
 4. **I/O and Logic Separation:** Do not mix side effects (file reads, output writes) with pure logic (parsing, transformation) in the same function.
 
-5. **comptime First:** Use `comptime` wherever the compiler can substitute a known value: lookup tables via `blk: { ... }` + `@splat`, `inline for` over known-length arrays, `comptime` function parameters for literals. Prefer `[256]T` lookup tables over switch chains for character classification. **Do not use `std.StaticStringMap.initComptime`** — it causes post-test segfaults with `std.testing.allocator`.
+5. **comptime Where It Clarifies:** Use `comptime` when it keeps code simpler or removes real runtime work without obscuring behavior: `inline for` over known-length arrays and `comptime` function parameters for literals are fine. Do not use lookup tables for character classification or escaping; prefer direct, readable switches and conditionals unless there is a measured, documented bottleneck and the table improves the design. **Do not use `std.StaticStringMap.initComptime`** — it causes post-test segfaults with `std.testing.allocator`.
 
 6. **Ownership is Explicit:** Every allocation has exactly one owner. When ownership transfers across function boundaries, the transfer must be documented via function contract (name, parameter order, errdefer placement). Error paths must not double-free or leak.
+
+7. **Token over raw byte for classification:** When a helper only needs YAML token categories, accept or return `Token` instead of `u8`. Keep `u8` only when the exact byte value is required, such as copying scalar content, computing numeric/hex output, or distinguishing characters collapsed into `Token.other`.
 
 ### Comment Conventions
 
@@ -110,8 +112,8 @@ Zig standard library only
 - `parseValueWithContext()` → Top-level dispatcher. Routes to per-type parse functions
 - `tryScalarAsMappingKey()` → Returns `YamlError!?Value`. Propagates structural errors; returns null only for non-colon cases
 - `keyToString()` → Shared Value → string key conversion
-- `isPlainKey()` → Free function using comptime `[256]bool` lookup table
-- `parseEscapeTo()` → Uses comptime `[256]?u8` and `[256]?[]const u8` lookup tables
+- `isPlainKey()` → Free function with readable character classification logic
+- `parseEscapeTo()` → Uses direct switch cases for escape handling
 - `skipNewlines()` / `hasInlineValue()` / `skipFlowWhitespaceAndComments()` → Shared scanner helpers (DRY)
 
 ### Emitter Patterns
@@ -120,7 +122,7 @@ Zig standard library only
 - `emitSeqChild()` → Recursive sequence element output (nesting control)
 - `writeNewlineIndent()` → Shared newline + indent output (DRY)
 - `collectKeys()` → Unified sorted/unsorted key collection (DRY)
-- `needsQuoting()` → Uses comptime `[256]bool` lookup tables + `Value.isReservedWord()` / `Value.looksLikeNumber()`
+- `needsQuoting()` → Uses clear character checks + `Value.isReservedWord()` / `Value.looksLikeNumber()`
 
 ### C API (`c_api.zig`) Patterns
 
@@ -129,7 +131,7 @@ Zig standard library only
 - `freeNullTerminated()` → Shared null-terminated string cleanup (DRY)
 - `buildEmitOptions()` / `nullTerminatedOutput()` → Shared export function logic
 - `zyaml_type` → Uses `inline else` for maintainability
-- `writeJsonEscapedChar()` → Uses comptime `[256]?[]const u8` lookup table
+- `writeJsonEscapedChar()` → Keeps JSON escaping logic explicit and easy to audit
 
 ---
 
@@ -173,6 +175,7 @@ zyaml vs PyYAML vs ruamel.yaml:
 ## Instructions
 
 - Communicate with the user in Japanese
+- When a code change alters current behavior, supported syntax, public API, memory ownership, error semantics, or implementation constraints, update `docs/spec.md` in the same change.
 - `uv pip install -e .` enables editable install with C extension
 - `eval "$(mise activate bash)"` may be required
 - pre-commit hooks are configured (ruff, ruff-format, ty check)

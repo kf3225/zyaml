@@ -43,7 +43,7 @@ static PyObject *value_to_py(ZyamlValue *v) {
     if (!v) Py_RETURN_NONE;
     switch (zyaml_type(v)) {
     case ZYAML_NULL: Py_RETURN_NONE;
-    case ZYAML_BOOLEAN: return zyaml_as_bool(v) ? Py_True : Py_False;
+    case ZYAML_BOOLEAN: return Py_NewRef(zyaml_as_bool(v) ? Py_True : Py_False);
     case ZYAML_INTEGER: return PyLong_FromLongLong(zyaml_as_integer(v));
     case ZYAML_FLOAT: return PyFloat_FromDouble(zyaml_as_float(v));
     case ZYAML_STRING: {
@@ -73,7 +73,12 @@ static PyObject *value_to_py(ZyamlValue *v) {
             if (!key) { Py_DECREF(dict); return NULL; }
             PyObject *val = value_to_py(zyaml_mapping_get_value_borrow(v, i));
             if (!val) { Py_DECREF(key); Py_DECREF(dict); return NULL; }
-            PyDict_SetItem(dict, key, val);
+            if (PyDict_SetItem(dict, key, val) < 0) {
+                Py_DECREF(key);
+                Py_DECREF(val);
+                Py_DECREF(dict);
+                return NULL;
+            }
             Py_DECREF(key);
             Py_DECREF(val);
         }
@@ -117,7 +122,11 @@ static ZyamlValue *py_to_value(PyObject *obj) {
         for (Py_ssize_t i = 0; i < n; i++) {
             ZyamlValue *item = py_to_value(PyList_GET_ITEM(obj, i));
             if (!item) { zyaml_free(seq); return NULL; }
-            zyaml_value_sequence_append(seq, item);
+            if (!zyaml_value_sequence_append(seq, item)) {
+                zyaml_free(item);
+                zyaml_free(seq);
+                return NULL;
+            }
         }
         return seq;
     }
@@ -133,7 +142,11 @@ static ZyamlValue *py_to_value(PyObject *obj) {
             if (!kptr) { zyaml_free(map); return NULL; }
             ZyamlValue *vval = py_to_value(val);
             if (!vval) { zyaml_free(map); return NULL; }
-            zyaml_value_mapping_put(map, kptr, (size_t)klen, vval);
+            if (!zyaml_value_mapping_put(map, kptr, (size_t)klen, vval)) {
+                zyaml_free(vval);
+                zyaml_free(map);
+                return NULL;
+            }
         }
         return map;
     }
@@ -151,6 +164,14 @@ static PyObject *ext_load(PyObject *self, PyObject *args) {
     PyObject *result = value_to_py(v);
     zyaml_free(v);
     return result;
+}
+
+static int append_text(PyObject **result, const char *suffix) {
+    PyObject *extra = PyUnicode_FromString(suffix);
+    if (!extra) return -1;
+    PyUnicode_Append(result, extra);
+    Py_DECREF(extra);
+    return *result ? 0 : -1;
 }
 
 static PyObject *ext_dump(PyObject *self, PyObject *args, PyObject *kwargs) {
@@ -174,13 +195,17 @@ static PyObject *ext_dump(PyObject *self, PyObject *args, PyObject *kwargs) {
        But quoted strings (those starting with ') do NOT get ...\n */
     if (is_scalar(data)) {
         const char *yaml_str = PyUnicode_AsUTF8(result);
-        if (yaml_str && yaml_str[0] != '\'') {
-            PyUnicode_Append(&result, PyUnicode_FromString("\n...\n"));
+        if (!yaml_str) {
+            Py_DECREF(result);
+            return NULL;
+        }
+        if (yaml_str[0] != '\'') {
+            if (append_text(&result, "\n...\n") < 0) return NULL;
         } else {
-            PyUnicode_Append(&result, PyUnicode_FromString("\n"));
+            if (append_text(&result, "\n") < 0) return NULL;
         }
     } else {
-        PyUnicode_Append(&result, PyUnicode_FromString("\n"));
+        if (append_text(&result, "\n") < 0) return NULL;
     }
     return result;
 }

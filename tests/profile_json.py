@@ -17,12 +17,13 @@ medium = (
 )
 
 enc = medium.encode("utf-8")
-lib = zyaml._lib
+lib = zyaml._get_lib()
 
 # Warmup
 p = lib.zyaml_parse(enc, len(enc))
-jp = lib.zyaml_to_json(p)
-json_bytes = ctypes.string_at(jp, ctypes.c_size_t.from_address(jp).value)
+out_len = ctypes.c_size_t(0)
+jp = lib.zyaml_to_json(p, ctypes.byref(out_len))
+json_bytes = ctypes.string_at(jp, out_len.value)
 lib.zyaml_free_json(jp)
 lib.zyaml_free(p)
 
@@ -42,19 +43,24 @@ print()
 bench("zyaml_parse (C)", lambda: lib.zyaml_parse(enc, len(enc)))
 
 p = lib.zyaml_parse(enc, len(enc))
-bench("zyaml_to_json (C)", lambda: lib.zyaml_to_json(p))
+
+
+def to_json_free():
+    out_len = ctypes.c_size_t(0)
+    jp = lib.zyaml_to_json(p, ctypes.byref(out_len))
+    lib.zyaml_free_json(jp)
+
+
+bench("zyaml_to_json (C)", to_json_free)
 
 p = lib.zyaml_parse(enc, len(enc))
-jp = lib.zyaml_to_json(p)
+out_len = ctypes.c_size_t(0)
+jp = lib.zyaml_to_json(p, ctypes.byref(out_len))
 
 
 # read as cstr
 def read_json():
-    addr = jp
-    length = 0
-    while ctypes.c_char.from_address(addr + length).value != b"\x00":
-        length += 1
-    ctypes.string_at(addr, length).decode("utf-8")
+    return ctypes.string_at(jp, out_len.value).decode("utf-8")
 
 
 bench("_read_cstr (byte scan + decode)", read_json)

@@ -85,7 +85,7 @@ def bench_ruamel(content: str, iters: int) -> float:
 
 def bench_zyaml_parse(content: str, iters: int) -> float:
     encoded = content.encode("utf-8")
-    lib = zyaml._lib
+    lib = zyaml._get_lib()
     start = time.perf_counter()
     for _ in range(iters):
         p = lib.zyaml_parse(encoded, len(encoded))

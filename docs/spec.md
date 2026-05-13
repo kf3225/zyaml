@@ -1,370 +1,122 @@
-# YAML 1.2.2 Specification Summary
+# zyaml Implementation Spec
 
-**Version:** 1.2.2 (2021-10-01)
-**Source:** https://yaml.org/spec/1.2.2/
+This document describes the current implementation contract of zyaml. It is not
+a full copy of the YAML 1.2.2 specification; it records the supported behavior,
+public surfaces, and constraints that the repository must preserve.
 
-## Overview
+## Scope
 
-YAML (YAML Ain't Markup Language) is a human-friendly data serialization language designed around common native data types of dynamic programming languages.
+- zyaml is a native Zig YAML parser/emitter with Python bindings that expose a
+  PyYAML-compatible convenience API.
+- The core library targets YAML 1.2.2 data parsing and stringification for
+  common configuration/data files.
+- Comments, directives, anchors, aliases, custom tags, and presentation metadata
+  are not preserved in the runtime value model. Supported anchors and aliases
+  are resolved during parsing.
+- The runtime value model is `null`, boolean, integer, float, string, sequence,
+  and mapping.
 
-## Design Goals (Priority Order)
+## Architecture
 
-1. Easily readable by humans
-2. Portable between programming languages
-3. Match native data structures of dynamic languages
-4. Consistent model for generic tools
-5. Support one-pass processing
-6. Expressive and extensible
-7. Easy to implement and use
+- `src/ast/value.zig` owns the core `Value` union and scalar resolution.
+- `src/parser/*` converts YAML bytes into `Value`.
+- `src/encode/emitter.zig` converts `Value` back to YAML text.
+- `src/decode/composer.zig` and `src/root.zig` provide the public Zig entry
+  points.
+- `src/c_api.zig`, `src/main.zig`, and `python/zyaml/*` are adapters over the
+  core and must not be imported by core modules.
+- Core modules receive allocators from callers and do not perform file I/O,
+  networking, or process-level side effects.
 
-## Information Models
+## Parsing
 
-### 1. Representation Graph
+- Top-level documents may contain scalars, block sequences, block mappings,
+  flow sequences, and flow mappings.
+- CR, LF, and CRLF input line breaks are normalized to LF in parsed scalar
+  content.
+- Tabs are rejected for indentation.
+- Plain, single-quoted, double-quoted, literal block, and folded block scalars
+  are supported.
+- Double-quoted scalar escapes support the YAML escapes implemented in
+  `src/parser/scalar.zig`, including hex Unicode escapes.
+- Empty mapping values parse as `null`.
+- Duplicate scalar keys in block and flow mappings are rejected with
+  `DuplicateKey`.
+- Unknown aliases are rejected with `UnknownAlias`.
+- Complex flow keys retain existing compatibility behavior when a key cannot be
+  represented as a scalar duplicate-check key.
+- When a plain scalar is being interpreted as a possible mapping key, detecting
+  `:` commits to mapping parsing. Structural errors after that point propagate
+  instead of falling back to scalar parsing.
 
-A rooted, connected, directed graph of tagged nodes.
+## Scalar Resolution
 
-**Node Kinds:**
-- **Scalar**: Opaque datum presentable as Unicode characters
-- **Sequence**: Ordered series of zero or more nodes
-- **Mapping**: Unordered set of key/value pairs (keys must be unique)
+- `Value.resolveScalar()` resolves YAML-like null, boolean, integer, and float
+  spellings before falling back to string.
+- Reserved YAML words and number-like strings are quoted by the emitter when
+  needed to preserve round-trip type intent.
 
-**Tags:**
-- Global tags: URIs (e.g., `tag:yaml.org,2002:int`)
-- Local tags: Start with `!`, application-specific
+## Emitting
 
-**Node Comparison:**
-- Two nodes are equal if they have the same tag and content
-- Scalars: canonical form character-by-character comparison
-- Collections: recursive equality
+- `stringify` emits valid YAML for the current `Value` model.
+- Mapping keys can be emitted in insertion order or sorted order via
+  `EmitOptions.sort_keys`.
+- The emitter quotes strings when required by YAML syntax, reserved words,
+  number-like spellings, leading indicator characters, or embedded characters
+  that make plain style unsafe.
+- Shared formatting helpers handle indentation and sequence/mapping children so
+  nested values use consistent output.
 
-### 2. Serialization Tree
+## C API
 
-Ordered tree representation for sequential access.
+- Opaque `zyaml_value` pointers wrap heap-owned Zig `Value` instances.
+- Parse calls allocate values with the C allocator and return ownership to the
+  caller, which must release them with `zyaml_free`.
+- Borrowing accessors such as `zyaml_as_string_borrow`,
+  `zyaml_sequence_get_borrow`, and `zyaml_mapping_get_borrow` return views tied
+  to the lifetime of the parent `zyaml_value`.
+- Owning string-return APIs return null-terminated buffers that must be released
+  with the matching free helper, currently `zyaml_free_cstr`,
+  `zyaml_free_yaml`, `zyaml_free_json`, or `zyaml_free_string`.
+- JSON export escapes control bytes, quotes, backslashes, and non-ASCII bytes
+  explicitly.
 
-**Serialization Details:**
-- Mapping key order (imposed for serialization)
-- Anchors (`&name`) and Aliases (`*name`) for node references
+## Python API
 
-### 3. Presentation Stream
+- `safe_load`, `load`, `safe_dump`, and `dump` provide the primary
+  PyYAML-compatible API.
+- The C extension is preferred when available; the ctypes fallback remains
+  available for development and compatibility.
+- Python wrapper objects own only root C values. Child wrappers returned from
+  sequence or mapping access are borrowed and keep their parent alive.
+- Python conversion raises `zyaml.YAMLError` for parser and binding errors.
 
-Unicode character stream with human-readable formatting.
+## Implementation Constraints
 
-**Presentation Details:**
-- Node styles (block/flow)
-- Scalar formats
-- Comments
-- Directives
-- Indentation
+- Character classification and escaping should use direct switches or readable
+  conditionals. Lookup tables are not used unless a measured and documented
+  bottleneck justifies one.
+- Helpers that only need YAML token categories should accept `Token` rather than
+  raw `u8`. Raw bytes remain appropriate when exact byte identity is required.
+- Public API names may intentionally retain thin wrapper functions when they
+  preserve ABI or clarify ownership. Unreferenced implementation-only exports
+  should be removed.
+- Allocation ownership must be explicit. Error paths use `errdefer` or local
+  cleanup helpers to avoid leaks and double frees.
 
-## Processing Stages
+## Verification
 
-### Dump (Native → Stream)
+Expected checks for behavior changes:
 
-1. **Represent**: Native data structures → Representation graph
-2. **Serialize**: Representation graph → Serialization tree
-3. **Present**: Serialization tree → Character stream
-
-### Load (Stream → Native)
-
-1. **Parse**: Character stream → Serialization tree
-2. **Compose**: Serialization tree → Representation graph
-3. **Construct**: Representation graph → Native data structures
-
-## Character Productions (Chapter 5)
-
-### Character Set
-
-- Printable Unicode characters
-- UTF-8, UTF-16LE, UTF-16BE, UTF-32LE, UTF-32BE encodings
-
-### Indicator Characters
-
-| Character | Name | Usage |
-|-----------|------|-------|
-| `-` | Hyphen | Block sequence entry |
-| `:` | Colon | Key/value separator |
-| `{` `}` | Curly braces | Flow mapping |
-| `[` `]` | Square brackets | Flow sequence |
-| `,` | Comma | Flow collection separator |
-| `#` | Octothorpe | Comment start |
-| `&` | Ampersand | Anchor |
-| `*` | Asterisk | Alias |
-| `!` | Exclamation | Tag |
-| `\|` | Pipe | Literal block scalar |
-| `>` | Greater | Folded block scalar |
-| `'` | Single quote | Single-quoted scalar |
-| `"` | Double quote | Double-quoted scalar |
-| `%` | Percent | Directive |
-| `?` | Question | Mapping key |
-| `---` | Document start | Document marker |
-| `...` | Document end | Document marker |
-
-### Line Break Characters
-
-- CR, LF, CRLF normalized to LF
-
-### White Space
-
-- Space (U+0020)
-- Tab (U+0009) - NOT allowed for indentation
-
-### Escape Sequences (Double-quoted)
-
-| Escape | Character |
-|--------|-----------|
-| `\0` | Null (U+0000) |
-| `\a` | Bell (U+0007) |
-| `\b` | Backspace (U+0008) |
-| `\t` | Tab (U+0009) |
-| `\n` | Line feed (U+000A) |
-| `\v` | Vertical tab (U+000B) |
-| `\f` | Form feed (U+000C) |
-| `\r` | Carriage return (U+000D) |
-| `\e` | Escape (U+001B) |
-| `\ ` | Space (U+0020) |
-| `\"` | Double quote |
-| `\/` | Slash |
-| `\\` | Backslash |
-| `\N` | Next line (U+0085) |
-| `\_` | Non-breaking space (U+00A0) |
-| `\L` | Line separator (U+2028) |
-| `\P` | Paragraph separator (U+2029) |
-| `\xHH` | 2-digit hex |
-| `\uHHHH` | 4-digit hex |
-| `\UHHHHHHHH` | 8-digit hex |
-
-## Structural Productions (Chapter 6)
-
-### Indentation Spaces
-
-- Must be spaces (NOT tabs)
-- Consistent within a block
-- Determines block structure
-
-### Separation Spaces
-
-- Separate node properties from content
-- Inside flow collections
-
-### Line Folding
-
-- In flow scalars, line breaks folded to spaces
-- In block scalars, controlled by indicator
-
-### Comments
-
-- Start with `#`
-- Continue to end of line
-- Must not appear inside scalars
-- Are presentation details (ignored in representation)
-
-### Directives
-
-**YAML Directive:**
-```yaml
-%YAML 1.2
+```bash
+zig fmt src build.zig
+zig build test
+zig build
+uv pip install -e .
+uv run pytest tests/
+uv run ruff check python/zyaml/ tests/
+uv run ty check python/zyaml/__init__.py
 ```
 
-**TAG Directive:**
-```yaml
-%TAG ! tag:example.com,2024:
-```
-
-### Node Properties
-
-- **Tag**: `!tag` or `!!str` or `!<uri>`
-- **Anchor**: `&name`
-
-## Flow Style Productions (Chapter 7)
-
-### Alias Nodes
-
-```yaml
-- &anchor value
-- *anchor  # reference to above
-```
-
-### Empty Nodes
-
-```yaml
-a:        # empty value (null)
-b: ""     # empty string
-```
-
-### Flow Scalar Styles
-
-**Plain Style:**
-```yaml
-key: plain value
-```
-
-**Single-Quoted Style:**
-```yaml
-key: 'value with ''escaped'' quotes'
-```
-
-**Double-Quoted Style:**
-```yaml
-key: "value with \"escaped\" quotes and \n newlines"
-```
-
-### Flow Collections
-
-**Flow Sequence:**
-```yaml
-[a, b, c]
-```
-
-**Flow Mapping:**
-```yaml
-{key1: value1, key2: value2}
-```
-
-## Block Style Productions (Chapter 8)
-
-### Block Scalar Headers
-
-**Indentation Indicator:**
-```yaml
-|2
-    indented content
-```
-
-**Chomping Indicator:**
-- `-` (clip): Single newline at end (default)
-- `+` (keep): Preserve all trailing newlines
-- (none): Strip trailing newlines
-
-### Literal Style (`|`)
-
-Preserves all newlines:
-```yaml
-|
-  line1
-  line2
-```
-Result: `"line1\nline2\n"`
-
-### Folded Style (`>`)
-
-Folds newlines to spaces:
-```yaml
->
-  line1
-  line2
-```
-Result: `"line1 line2\n"`
-
-**Exceptions (preserved):**
-- Blank lines
-- More-indented lines
-
-### Block Sequences
-
-```yaml
-- item1
-- item2
--
-  nested1
-  nested2
-```
-
-### Block Mappings
-
-```yaml
-key1: value1
-key2:
-  nested: value2
-```
-
-## Document Stream Productions (Chapter 9)
-
-### Document Markers
-
-- `---` - Document start
-- `...` - Document end
-
-### Document Types
-
-**Bare Document:**
-```yaml
-scalar
-```
-
-**Explicit Document:**
-```yaml
----
-scalar
-...
-```
-
-**Directives Document:**
-```yaml
-%YAML 1.2
-%TAG ! tag:example.com:
----
-content
-```
-
-### Streams
-
-Multiple documents in one stream:
-```yaml
----
-doc1
----
-doc2
-```
-
-## Recommended Schemas (Chapter 10)
-
-### Failsafe Schema
-
-**Tags:**
-- `tag:yaml.org,2002:map` - Generic mapping
-- `tag:yaml.org,2002:seq` - Generic sequence
-- `tag:yaml.org,2002:str` - Generic string
-
-### JSON Schema
-
-Adds:
-- `tag:yaml.org,2002:null` - `~`, `null`, `Null`, `NULL`
-- `tag:yaml.org,2002:bool` - `true`, `false` (case-insensitive)
-- `tag:yaml.org,2002:int` - Integer representations
-- `tag:yaml.org,2002:float` - Float representations
-
-### Core Schema
-
-Extends JSON Schema with:
-- Octal integers: `0o14`
-- Hex integers: `0xC`
-- Float: `.inf`, `-.inf`, `.nan`
-- Timestamps (optional)
-
-## Tag Resolution
-
-| Pattern | Tag |
-|---------|-----|
-| `null`, `Null`, `NULL`, `~`, empty | `tag:yaml.org,2002:null` |
-| `true`, `True`, `TRUE` | `tag:yaml.org,2002:bool` |
-| `false`, `False`, `FALSE` | `tag:yaml.org,2002:bool` |
-| Integer patterns | `tag:yaml.org,2002:int` |
-| Float patterns | `tag:yaml.org,2002:float` |
-| Everything else | `tag:yaml.org,2002:str` |
-
-## Loading Failure Points
-
-1. **Ill-formed streams** - Syntax errors
-2. **Unidentified aliases** - Reference to unknown anchor
-3. **Unresolved tags** - Cannot determine tag
-4. **Unrecognized tags** - Tag not known to processor
-5. **Invalid content** - Content doesn't match tag constraints
-6. **Unavailable tags** - Native type not available
-
-## Key Constraints
-
-- Mapping keys must be unique (equality comparison)
-- Tab characters cannot be used for indentation
-- Indentation must be consistent within each block
-- Flow collections must be properly closed
-- Escape sequences must be valid in double-quoted strings
+Performance-sensitive changes should also run the repository benchmark and
+confirm zyaml remains materially faster than PyYAML on parse and dump paths.
