@@ -14,7 +14,7 @@ import io
 import os
 import warnings
 from enum import IntEnum
-from typing import Any, Iterator, TypeVar, Union, overload
+from typing import Any, Iterator, Optional, TypeVar, Union, overload
 
 import zyaml._ext as _ext  # type: ignore[attr-defined]
 
@@ -185,7 +185,7 @@ def _find_lib() -> str:
     )
 
 
-def _search_dir(directory: str) -> str | None:
+def _search_dir(directory: str) -> Optional[str]:
     for name in _LIB_NAMES:
         path = os.path.join(directory, name)
         if os.path.exists(path):
@@ -266,7 +266,7 @@ def _setup_string_api(lib: ctypes.CDLL) -> None:
     lib.zyaml_free_cstr.restype = None
 
 
-_lib: ctypes.CDLL | None = None
+_lib: Optional[ctypes.CDLL] = None
 
 
 def _get_lib() -> ctypes.CDLL:
@@ -346,7 +346,7 @@ def _mapping_to_python(ptr: int) -> dict[str, Any]:
     return result
 
 
-def _parse_to_python(content: str | bytes) -> Any:
+def _parse_to_python(content: Union[str, bytes]) -> Any:
     try:
         if isinstance(content, bytes):
             content = content.decode("utf-8")
@@ -355,7 +355,7 @@ def _parse_to_python(content: str | bytes) -> Any:
         raise YAMLError(str(e)) from e
 
 
-def _get_stream_data(stream) -> str | bytes:
+def _get_stream_data(stream) -> Union[str, bytes]:
     if isinstance(stream, str):
         return stream
     if isinstance(stream, bytes):
@@ -365,7 +365,7 @@ def _get_stream_data(stream) -> str | bytes:
     raise TypeError(f"expected str, bytes, or file-like object, got {type(stream).__name__}")
 
 
-def _read_stream(stream) -> str | bytes:
+def _read_stream(stream) -> Union[str, bytes]:
     data = stream.read()
     return data
 
@@ -395,7 +395,7 @@ def _write_stream(stream: io.IOBase, output: str) -> None:
         stream.write(output)
 
 
-def _dump(data: Any, stream: io.IOBase | None = None, **kwds) -> str | None:
+def _dump(data: Any, stream: Optional[io.IOBase] = None, **kwds) -> Optional[str]:
     opts = _DumpOpts.from_kwargs(**kwds)
     output = _dump_to_string(data, opts)
     if stream is not None:
@@ -404,7 +404,7 @@ def _dump(data: Any, stream: io.IOBase | None = None, **kwds) -> str | None:
     return output
 
 
-def _dump_all(documents: Any, stream: io.IOBase | None = None, **kwds) -> str | None:
+def _dump_all(documents: Any, stream: Optional[io.IOBase] = None, **kwds) -> Optional[str]:
     opts = _DumpOpts.from_kwargs(explicit_start=True, **kwds)
     parts = [_dump_to_string(doc, opts).rstrip("\n") for doc in documents]
     output = "\n".join(parts) + "\n"
@@ -440,7 +440,7 @@ def _coerce(value: Any, target: type) -> Any:
     return value
 
 
-def _coerce_dict(value: Any, args: tuple | None) -> dict:
+def _coerce_dict(value: Any, args: Optional[tuple]) -> dict:
     if not isinstance(value, dict):
         raise TypeError(f"expected dict, got {type(value).__name__}")
     if not args or len(args) < 2:
@@ -449,7 +449,7 @@ def _coerce_dict(value: Any, args: tuple | None) -> dict:
     return {k: _coerce(v, val_type) for k, v in value.items()}
 
 
-def _coerce_list(value: Any, args: tuple | None) -> list:
+def _coerce_list(value: Any, args: Optional[tuple]) -> list:
     if not isinstance(value, list):
         raise TypeError(f"expected list, got {type(value).__name__}")
     if not args:
@@ -457,7 +457,7 @@ def _coerce_list(value: Any, args: tuple | None) -> list:
     return [_coerce(item, args[0]) for item in value]
 
 
-def _coerce_tuple(value: Any, args: tuple | None) -> tuple:
+def _coerce_tuple(value: Any, args: Optional[tuple]) -> tuple:
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"expected sequence, got {type(value).__name__}")
     if not args:
@@ -490,7 +490,7 @@ def _coerce_dataclass(value: dict, target: type) -> Any:
 # PyYAML-compatible public API
 # ---------------------------------------------------------------------------
 
-_Stream = str | bytes | io.IOBase
+_Stream = Union[str, bytes, io.IOBase]
 
 
 @overload
@@ -499,7 +499,7 @@ def safe_load(stream: _Stream, /) -> Any: ...
 def safe_load(stream: _Stream, /, *, type: type[T]) -> T: ...
 
 
-def safe_load(stream, /, *, type: type | None = None):
+def safe_load(stream, /, *, type: Optional[type] = None):
     data = _get_stream_data(stream)
     result = _parse_to_python(data)
     if type is not None:
@@ -527,7 +527,7 @@ def load(stream, /, *, Loader: type) -> Any: ...
 def load(stream, /, *, Loader: type, type: type[T]) -> T: ...
 
 
-def load(stream, /, *, Loader=None, type: type | None = None):
+def load(stream, /, *, Loader=None, type: Optional[type] = None):
     if Loader is None:
         _warn_no_loader()
     if type is not None:
@@ -556,7 +556,7 @@ def load_all(stream, Loader=None):
     return safe_load_all(stream)
 
 
-def full_load(stream, /, *, type: type | None = None) -> Any:
+def full_load(stream, /, *, type: Optional[type] = None) -> Any:
     if type is not None:
         return safe_load(stream, type=type)
     return safe_load(stream)
@@ -566,7 +566,7 @@ def full_load_all(stream) -> Iterator:
     return safe_load_all(stream)
 
 
-def unsafe_load(stream, /, *, type: type | None = None) -> Any:
+def unsafe_load(stream, /, *, type: Optional[type] = None) -> Any:
     if type is not None:
         return safe_load(stream, type=type)
     return safe_load(stream)
@@ -582,7 +582,7 @@ def safe_dump(data: Any, /, **kwds: object) -> str: ...
 def safe_dump(data: Any, /, stream: io.IOBase, **kwds: object) -> None: ...
 
 
-def safe_dump(data, stream=None, **kwds) -> str | None:
+def safe_dump(data, stream=None, **kwds) -> Optional[str]:
     return _dump(data, stream, **kwds)
 
 
@@ -592,7 +592,7 @@ def safe_dump_all(documents: Any, /, **kwds: object) -> str: ...
 def safe_dump_all(documents: Any, /, stream: io.IOBase, **kwds: object) -> None: ...
 
 
-def safe_dump_all(documents, stream=None, **kwds) -> str | None:
+def safe_dump_all(documents, stream=None, **kwds) -> Optional[str]:
     return _dump_all(documents, stream, **kwds)
 
 
@@ -602,7 +602,7 @@ def dump(data: Any, /, **kwds: object) -> str: ...
 def dump(data: Any, /, stream: io.IOBase, **kwds: object) -> None: ...
 
 
-def dump(data, stream=None, Dumper=None, **kwds) -> str | None:
+def dump(data, stream=None, Dumper=None, **kwds) -> Optional[str]:
     if Dumper is None:
         Dumper = SafeDumper
     return _dump(data, stream, **kwds)
@@ -614,7 +614,7 @@ def dump_all(documents: Any, /, **kwds: object) -> str: ...
 def dump_all(documents: Any, /, stream: io.IOBase, **kwds: object) -> None: ...
 
 
-def dump_all(documents, stream=None, Dumper=None, **kwds) -> str | None:
+def dump_all(documents, stream=None, Dumper=None, **kwds) -> Optional[str]:
     if Dumper is None:
         Dumper = SafeDumper
     return _dump_all(documents, stream, **kwds)
@@ -657,7 +657,7 @@ def add_path_resolver(tag, path, kind=None, Loader=None, Dumper=None):
 class YamlValue:
     __slots__ = ("_owned", "_owner", "_ptr")
 
-    def __init__(self, ptr: int, *, owner: "YamlValue | None" = None, owned: bool = True):
+    def __init__(self, ptr: int, *, owner: "Optional[YamlValue]" = None, owned: bool = True):
         self._ptr = ptr
         self._owner = owner
         self._owned = owned
