@@ -53,18 +53,22 @@ const BoxedValue = struct {
     arena: ?*std.heap.ArenaAllocator,
 };
 
+// YamlValueOpaque* has two representations:
+//   Owned:  *BoxedValue — from parse/boxValue, starts with BOX_MAGIC
+//   Borrow: *Value      — from _borrow functions, starts with Value tag (0-6)
+// BOX_MAGIC first byte (0x4C) never overlaps with tag range (0-6).
+
 fn toBoxedValue(ptr: ?*YamlValueOpaque) ?*BoxedValue {
-    if (ptr) |p| {
-        return @ptrCast(@alignCast(p));
-    }
+    const p = ptr orelse return null;
+    const b: *BoxedValue = @ptrCast(@alignCast(p));
+    if (b.magic == BOX_MAGIC) return b;
     return null;
 }
 
 fn toValue(ptr: ?*YamlValueOpaque) ?*Value {
-    if (toBoxedValue(ptr)) |b| {
-        return &b.value;
-    }
-    return null;
+    const p = ptr orelse return null;
+    if (toBoxedValue(ptr)) |b| return &b.value;
+    return @ptrCast(@alignCast(p));
 }
 
 fn boxValue(v: Value) ?*YamlValueOpaque {
@@ -135,17 +139,14 @@ export fn zyaml_parse_file(path: [*:0]const u8) ?*YamlValueOpaque {
 }
 
 export fn zyaml_free(value: ?*YamlValueOpaque) void {
-    if (value) |p| {
-        const b: *BoxedValue = @ptrCast(@alignCast(p));
-        if (b.magic != BOX_MAGIC) return;
+    if (toBoxedValue(value)) |b| {
         if (b.arena) |arena| {
             arena.deinit();
             c_alloc.destroy(arena);
-            c_alloc.destroy(b);
         } else {
             b.value.deinit(c_alloc);
-            c_alloc.destroy(b);
         }
+        c_alloc.destroy(b);
     }
 }
 

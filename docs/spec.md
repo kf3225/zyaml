@@ -69,12 +69,22 @@ public surfaces, and constraints that the repository must preserve.
 
 ## C API
 
-- Opaque `zyaml_value` pointers wrap heap-owned Zig `Value` instances.
-- Parse calls allocate values with the C allocator and return ownership to the
-  caller, which must release them with `zyaml_free`.
-- Borrowing accessors such as `zyaml_as_string_borrow`,
-  `zyaml_sequence_get_borrow`, and `zyaml_mapping_get_borrow` return views tied
-  to the lifetime of the parent `zyaml_value`.
+- Opaque `zyaml_value` pointers have two internal representations:
+  **owned** (`*BoxedValue`, identified by a `BOX_MAGIC` header) and **borrowed**
+  (`*Value`, returned by `_borrow` accessors). The magic value's first byte
+  (`0x4C`) is outside the Value tag range (0–6), so the two representations are
+  distinguishable without ambiguity.
+- Accessors such as `zyaml_type`, `zyaml_as_bool`, and `zyaml_as_string_borrow`
+  accept both owned and borrowed pointers transparently.
+- Parse calls allocate owned values with the C allocator and return ownership to
+  the caller, which must release them with `zyaml_free`. Passing a borrowed
+  pointer to `zyaml_free` is safe (no-op).
+- Borrowing accessors such as `zyaml_sequence_get_borrow`,
+  `zyaml_mapping_get_value_borrow`, and `zyaml_mapping_get_key_borrow` return
+  views tied to the lifetime of the parent `zyaml_value`. Borrowed pointers must
+  not be used after the parent is freed.
+- Builder functions (`zyaml_value_sequence_append`, `zyaml_value_mapping_put`)
+  accept only owned pointers and return `false` for borrowed ones.
 - Owning string-return APIs return null-terminated buffers that must be released
   with the matching free helper, currently `zyaml_free_cstr`,
   `zyaml_free_yaml`, `zyaml_free_json`, or `zyaml_free_string`.
