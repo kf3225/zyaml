@@ -22,6 +22,10 @@ jobs:
             cibw_archs: auto
           - os: macos-15
             cibw_archs: auto
+          - os: windows-latest
+            cibw_archs: auto
+          - os: windows-11-arm
+            cibw_archs: auto
       fail-fast: false
     runs-on: ${{ matrix.os }}
     steps:
@@ -48,6 +52,7 @@ jobs:
             && export PATH="/tmp/zig-linux-$(uname -m)-0.14.0:$PATH"
             && zig build
           CIBW_BEFORE_BUILD_MACOS: zig build
+          CIBW_BEFORE_BUILD_WINDOWS: zig build
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.cibw_archs }}
