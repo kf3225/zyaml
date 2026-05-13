@@ -45,3 +45,33 @@ jobs:
       - run: pip install -e .
       - run: pip install pytest pyyaml
       - run: pytest tests/
+
+  python-test-arm64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12", "3.14"]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.14.0
+      - run: zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe
+      - name: Install cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      - name: Cross-compile C extension for aarch64
+        run: |
+          PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
+          STATIC_LIB=$(find zig-out -name 'libzyaml_c.a' -print -quit)
+          aarch64-linux-gnu-gcc -shared -fPIC \
+            -I$(python3 -c "import sysconfig; print(sysconfig.get_path('include'))") \
+            python/zyaml/_ext.c \
+            "$STATIC_LIB" \
+            -o python/zyaml/_ext.cpython-${PY_VER}-aarch64-linux-gnu.so
