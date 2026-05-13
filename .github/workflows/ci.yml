@@ -40,5 +40,5 @@ jobs:
           allow-prereleases: true
       - run: zig build
       - run: pip install -e .
-      - run: pip install pytest
+      - run: pip install pytest pyyaml
       - run: pytest tests/

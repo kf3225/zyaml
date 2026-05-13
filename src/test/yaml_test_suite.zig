@@ -206,10 +206,13 @@ fn processDir(allocator: std.mem.Allocator, dir: std.fs.Dir, id: []const u8, log
     }
 
     var iter = dir.iterate();
-    while (iter.next() catch return) |entry| {
+    while (iter.next() catch {
+        log.writer().print("{s}/<iterate-err> WARN\n", .{id}) catch {};
+        return;
+    }) |entry| {
         if (entry.kind != .directory and entry.kind != .sym_link) continue;
 
-        var sub_dir = dir.openDir(entry.name, .{}) catch continue;
+        var sub_dir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
         defer sub_dir.close();
 
         const sub_id = std.fmt.allocPrint(allocator, "{s}/{s}", .{ id, entry.name }) catch continue;
@@ -239,7 +242,7 @@ test "yaml-test-suite" {
     while (try top_iter.next()) |top_entry| {
         if (top_entry.kind != .directory) continue;
 
-        var sub_dir = suite_dir.openDir(top_entry.name, .{}) catch continue;
+        var sub_dir = suite_dir.openDir(top_entry.name, .{ .iterate = true }) catch continue;
         defer sub_dir.close();
 
         processDir(allocator, sub_dir, top_entry.name, log, &passed, &failed, &skipped_count);
