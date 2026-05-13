@@ -3,31 +3,24 @@ name: Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-sdist:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install build
-      - run: python -m build --sdist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sdist
-          path: dist/*.tar.gz
-
   build-wheels:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-15-intel, macos-15]
+        include:
+          - os: ubuntu-latest
+            cibw_archs: x86_64
+          - os: ubuntu-24.04-arm
+            cibw_archs: aarch64
+          - os: macos-13
+            cibw_archs: x86_64
+          - os: macos-15
+            cibw_archs: arm64
       fail-fast: false
     runs-on: ${{ matrix.os }}
     steps:
@@ -37,35 +30,38 @@ jobs:
       - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.14.0
+      - run: zig build
+        if: runner.os != 'Linux'
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install cibuildwheel
       - run: cibuildwheel
         env:
-          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux_*"
+          CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_BEFORE_BUILD_LINUX: >
-            curl -L https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz
-            | tar -xJ -C /tmp
+            curl -L https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz -o /tmp/zig.tar.xz
+            && tar -xJ -C /tmp -f /tmp/zig.tar.xz
             && export PATH="/tmp/zig-linux-$(uname -m)-0.14.0:$PATH"
             && zig build
-          CIBW_BEFORE_BUILD_MACOS: zig build
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
+          name: wheels-${{ matrix.os }}-${{ matrix.cibw_archs }}
           path: wheelhouse/*.whl
 
   publish:
-    needs: [build-sdist, build-wheels]
+    needs: [build-wheels]
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: "{sdist,wheels-*}"
+          pattern: "wheels-*"
           merge-multiple: true
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
