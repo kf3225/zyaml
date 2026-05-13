@@ -32,8 +32,9 @@ public surfaces, and constraints that the repository must preserve.
 
 - Top-level documents may contain scalars, block sequences, block mappings,
   flow sequences, and flow mappings.
-- CR, LF, and CRLF input line breaks are normalized to LF in parsed scalar
-  content.
+- CR, LF, and CRLF input line breaks are normalized to LF before parsing (in
+  `c_api.zig` `normalizeNewlines`). This applies to both `zyaml_parse` and
+  `zyaml_parse_file`.
 - Tabs are rejected for indentation.
 - Plain, single-quoted, double-quoted, literal block, and folded block scalars
   are supported.

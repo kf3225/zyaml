@@ -176,12 +176,16 @@ def _find_lib() -> str:
     found = _search_dir(this_dir)
     if found:
         return found
-    build_dir = os.path.join(os.path.normpath(os.path.join(this_dir, "..", "..")), "zig-out", "lib")
-    found = _search_dir(build_dir)
-    if found:
-        return found
+    project_root = os.path.normpath(os.path.join(this_dir, "..", ".."))
+    for subdir in ("zig-out/lib", "zig-out/bin"):
+        build_dir = os.path.join(project_root, subdir)
+        found = _search_dir(build_dir)
+        if found:
+            return found
     raise FileNotFoundError(
-        f"zyaml shared library not found. Run 'zig build' first. Searched: {this_dir}, {build_dir}"
+        f"zyaml shared library not found. Run 'zig build' first. "
+        f"Searched: {this_dir}, {os.path.join(project_root, 'zig-out/lib')}, "
+        f"{os.path.join(project_root, 'zig-out/bin')}"
     )
 
 
