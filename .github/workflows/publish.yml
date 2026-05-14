@@ -3,6 +3,9 @@ name: Publish
 on:
   release:
     types: [published]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -10,6 +13,10 @@ permissions:
 
 jobs:
   build-wheels:
+    if: >
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.head_ref, 'release-please--branches--main')
     strategy:
       matrix:
         include:
@@ -61,6 +68,7 @@ jobs:
           path: wheelhouse/*.whl
 
   publish:
+    if: github.event_name == 'release'
     needs: [build-wheels]
     runs-on: ubuntu-latest
     environment: pypi
@@ -74,3 +82,23 @@ jobs:
           merge-multiple: true
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  test-publish:
+    if: >
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'release-please--branches--main')
+    needs: [build-wheels]
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "wheels-*"
+          merge-multiple: true
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
