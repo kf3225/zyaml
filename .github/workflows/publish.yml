@@ -3,9 +3,9 @@ name: Publish
 on:
   release:
     types: [published]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
     if: >
       github.event_name == 'release' ||
       github.event_name == 'workflow_dispatch' ||
-      startsWith(github.head_ref, 'release-please--branches--main')
+      github.event_name == 'workflow_run'
     strategy:
       matrix:
         include:
@@ -84,9 +84,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   test-publish:
-    if: >
-      github.event_name == 'pull_request' &&
-      startsWith(github.head_ref, 'release-please--branches--main')
+    if: github.event_name == 'workflow_run'
     needs: [build-wheels]
     runs-on: ubuntu-latest
     environment: testpypi
