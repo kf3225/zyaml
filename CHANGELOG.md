@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/kf3225/zyaml/compare/v0.1.0...v0.1.1) (2026-05-14)
+
+
+### Bug Fixes
+
+* TestPyCI only on open release-please PR + Windows AMD64 ([#9](https://github.com/kf3225/zyaml/issues/9)) ([f45bd9b](https://github.com/kf3225/zyaml/commit/f45bd9bd4051501c8c0547b5b45241743d7a9fce))
+
 ## 0.1.0 (2026-05-14)
 
 
