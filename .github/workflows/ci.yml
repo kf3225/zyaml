@@ -47,11 +47,43 @@ jobs:
       - run: pytest tests/
 
   python-test-arm64:
-    runs-on: ubuntu-latest
     strategy:
-      matrix:
-        python-version: ["3.9", "3.12", "3.14"]
       fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.9"
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.9"
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: macos-latest
+            python-version: "3.14"
+          - os: windows-11-arm
+            python-version: "3.11"
+          - os: windows-11-arm
+            python-version: "3.12"
+          - os: windows-11-arm
+            python-version: "3.13"
+          - os: windows-11-arm
+            python-version: "3.14"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,13 +92,18 @@ jobs:
         with:
           version: 0.14.0
       - run: zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSafe
+        if: runner.os == 'Linux'
+      - run: zig build
+        if: runner.os != 'Linux'
       - name: Install cross-compiler
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
       - name: Cross-compile C extension for aarch64
+        if: runner.os == 'Linux'
         run: |
           PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
           STATIC_LIB=$(find zig-out -name 'libzyaml_c.a' -print -quit)
@@ -75,3 +112,9 @@ jobs:
             python/zyaml/_ext.c \
             "$STATIC_LIB" \
             -o python/zyaml/_ext.cpython-${PY_VER}-aarch64-linux-gnu.so
+      - run: pip install -e .
+        if: runner.os != 'Linux'
+      - run: pip install pytest pyyaml
+        if: runner.os != 'Linux'
+      - run: pytest tests/
+        if: runner.os != 'Linux'
