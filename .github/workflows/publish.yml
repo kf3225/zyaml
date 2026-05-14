@@ -30,7 +30,7 @@ jobs:
           - os: macos-15
             cibw_archs: auto
           - os: windows-latest
-            cibw_archs: auto
+            cibw_archs: AMD64
           - os: windows-11-arm
             cibw_archs: auto
       fail-fast: false
