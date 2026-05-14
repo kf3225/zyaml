@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/kf3225/zyaml/compare/v0.1.1...v0.1.2) (2026-05-14)
+
+
+### Documentation
+
+* add bilingual README (English + Japanese) ([#22](https://github.com/kf3225/zyaml/issues/22)) ([38295cf](https://github.com/kf3225/zyaml/commit/38295cfcdfd0cd4db1651bb4c58de0e40fa711ba))
+
 ## [0.1.1](https://github.com/kf3225/zyaml/compare/v0.1.0...v0.1.1) (2026-05-14)
 
 
