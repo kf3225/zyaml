@@ -83,9 +83,27 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
-  test-publish:
+  check-release-pr:
     if: github.event_name == 'workflow_run'
-    needs: [build-wheels]
+    runs-on: ubuntu-latest
+    outputs:
+      has-open-pr: ${{ steps.check.outputs.has_open_pr }}
+    steps:
+      - uses: actions/github-script@v7
+        id: check
+        with:
+          script: |
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: 'release-please--branches--main'
+            });
+            core.setOutput('has_open_pr', prs.length > 0 ? 'true' : 'false');
+
+  test-publish:
+    if: needs.check-release-pr.outputs.has-open-pr == 'true'
+    needs: [build-wheels, check-release-pr]
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
